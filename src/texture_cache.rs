@@ -817,7 +817,20 @@ impl TextureCache {
                             let item = iter.free_list().get_mut(id);
                             if item.texture_id == old_texture_id {
                                 item.texture_id = new_texture_id;
-                                item.texture_size = Size2D::new(texture_size, texture_size)
+                                let width_factor = texture_size as f32 /
+                                    item.texture_size.width as f32;
+                                let height_factor = texture_size as f32 /
+                                    item.texture_size.height as f32;
+                                item.texture_size = Size2D::new(texture_size, texture_size);
+
+                                item.uv_rect.top_left.x /= width_factor;
+                                item.uv_rect.top_right.x /= width_factor;
+                                item.uv_rect.bottom_left.x /= width_factor;
+                                item.uv_rect.bottom_right.x /= width_factor;
+                                item.uv_rect.top_left.y /= height_factor;
+                                item.uv_rect.top_right.y /= height_factor;
+                                item.uv_rect.bottom_left.y /= height_factor;
+                                item.uv_rect.bottom_right.y /= height_factor;
                             }
                         }
                     }

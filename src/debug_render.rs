@@ -37,13 +37,28 @@ impl DebugRenderer {
         let tri_vao = device.create_vao(VertexFormat::DebugColor, None);
 
         let font_texture_id = device.create_texture_ids(1)[0];
+        let mut expanded_data = Vec::new();
+        let data = if cfg!(target_os="android") {
+            for byte in debug_font_data::FONT_BITMAP.iter() {
+                expanded_data.push(*byte);
+                expanded_data.push(*byte);
+                expanded_data.push(*byte);
+                expanded_data.push(*byte);
+            }
+            Some(expanded_data.as_slice())
+        } else {
+            for byte in debug_font_data::FONT_BITMAP.iter() {
+                expanded_data.push(*byte);
+            }
+            Some(expanded_data.as_slice())
+        };
         device.init_texture(font_texture_id,
                             debug_font_data::BMP_WIDTH,
                             debug_font_data::BMP_HEIGHT,
                             ImageFormat::A8,
                             TextureFilter::Linear,
                             RenderTargetMode::None,
-                            Some(&debug_font_data::FONT_BITMAP));
+                            data);
 
         DebugRenderer {
             font_vertices: Vec::new(),

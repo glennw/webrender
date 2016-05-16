@@ -3,8 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use euclid::Matrix4D;
 use frame::Frame;
+//use hprof;
 use internal_types::{FontTemplate, ResultMsg, RendererFrame};
 use ipc_channel::ipc::{IpcBytesReceiver, IpcBytesSender, IpcReceiver};
 use profiler::BackendProfileCounters;
@@ -16,8 +16,9 @@ use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Sender;
 use texture_cache::{TextureCache, TextureCacheItemId};
+use tiling::FrameBuilderConfig;
 use webrender_traits::{ApiMsg, AuxiliaryLists, BuiltDisplayList, IdNamespace, RenderNotifier};
-use webrender_traits::{PipelineId, WebGLContextId, ScrollLayerId};
+use webrender_traits::{PipelineId, WebGLContextId};
 use batch::new_id;
 use device::TextureId;
 use offscreen_gl_context::{NativeGLContext, GLContext, ColorAttachmentType, NativeGLContextMethods, NativeGLContextHandle};
@@ -50,17 +51,16 @@ impl RenderBackend {
                result_tx: Sender<ResultMsg>,
                device_pixel_ratio: f32,
                white_image_id: TextureCacheItemId,
-               dummy_mask_image_id: TextureCacheItemId,
                texture_cache: TextureCache,
                enable_aa: bool,
                notifier: Arc<Mutex<Option<Box<RenderNotifier>>>>,
-               webrender_context_handle: Option<NativeGLContextHandle>) -> RenderBackend {
+               webrender_context_handle: Option<NativeGLContextHandle>,
+               config: FrameBuilderConfig) -> RenderBackend {
         let mut thread_pool = scoped_threadpool::Pool::new(8);
 
         let resource_cache = ResourceCache::new(&mut thread_pool,
                                                 texture_cache,
                                                 white_image_id,
-                                                dummy_mask_image_id,
                                                 device_pixel_ratio,
                                                 enable_aa);
 
@@ -73,7 +73,7 @@ impl RenderBackend {
             device_pixel_ratio: device_pixel_ratio,
             resource_cache: resource_cache,
             scene: Scene::new(),
-            frame: Frame::new(),
+            frame: Frame::new(config),
             next_namespace_id: IdNamespace(1),
             notifier: notifier,
             webrender_context_handle: webrender_context_handle,
@@ -181,7 +181,9 @@ impl RenderBackend {
                             let auxiliary_lists =
                                 AuxiliaryLists::from_data(auxiliary_lists_data,
                                                           auxiliary_lists_descriptor);
+//                            hprof::start_frame();
                             let frame = profile_counters.total_time.profile(|| {
+//                                let _pf = hprof::enter("root1");
                                 self.scene.set_root_stacking_context(pipeline_id,
                                                                      epoch,
                                                                      stacking_context_id,
@@ -193,24 +195,36 @@ impl RenderBackend {
                                 self.build_scene();
                                 self.render()
                             });
+//                            hprof::end_frame();
+                            //hprof::profiler().print_timing();
 
                             self.publish_frame(frame, &mut profile_counters);
                         }
                         ApiMsg::SetRootPipeline(pipeline_id) => {
+//                            hprof::start_frame();
                             let frame = profile_counters.total_time.profile(|| {
+//                                let _pf = hprof::enter("root2");
                                 self.scene.set_root_pipeline_id(pipeline_id);
 
                                 self.build_scene();
                                 self.render()
                             });
+//                            hprof::end_frame();
+                            //hprof::profiler().print_timing();
 
                             self.publish_frame(frame, &mut profile_counters);
                         }
                         ApiMsg::Scroll(delta, cursor, move_phase) => {
+//                            hprof::start_frame();
                             let frame = profile_counters.total_time.profile(|| {
+//                                let _pf = hprof::enter("root3");
                                 self.frame.scroll(delta, cursor, move_phase);
+
+                                self.build_scene();
                                 self.render()
                             });
+//                            hprof::end_frame();
+                            //hprof::profiler().print_timing();
 
                             self.publish_frame(frame, &mut profile_counters);
                         }
@@ -225,6 +239,7 @@ impl RenderBackend {
                         ApiMsg::TranslatePointToLayerSpace(point, tx) => {
                             // First, find the specific layer that contains the point.
                             let point = point / self.device_pixel_ratio;
+                            /*
                             if let (Some(root_pipeline_id), Some(root_scroll_layer_id)) =
                                     (self.scene.root_pipeline_id,
                                      self.frame.root_scroll_layer_id) {
@@ -251,7 +266,7 @@ impl RenderBackend {
                                         }
                                     }
                                 }
-                            }
+                            }*/
                             tx.send((point, PipelineId(0, 0))).unwrap()
                         }
                         ApiMsg::RequestWebGLContext(size, attributes, tx) => {
@@ -374,8 +389,7 @@ impl RenderBackend {
     fn publish_frame(&mut self,
                      frame: RendererFrame,
                      profile_counters: &mut BackendProfileCounters) {
-        let pending_updates = self.frame.pending_updates();
-        let msg = ResultMsg::NewFrame(frame, pending_updates, profile_counters.clone());
+        let msg = ResultMsg::NewFrame(frame, profile_counters.clone());
         self.result_tx.send(msg).unwrap();
         profile_counters.reset();
 

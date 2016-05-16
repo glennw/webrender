@@ -172,7 +172,10 @@ pub struct RendererProfileCounters {
 
 pub struct RendererProfileTimers {
     pub cpu_time: TimeProfileCounter,
-    pub gpu_time: TimeProfileCounter,
+    pub gpu_time_text: TimeProfileCounter,
+    pub gpu_time_tiling: TimeProfileCounter,
+    pub gpu_time_complex: TimeProfileCounter,
+    pub gpu_time_total: TimeProfileCounter,
 }
 
 impl RendererProfileCounters {
@@ -196,7 +199,10 @@ impl RendererProfileTimers {
     pub fn new() -> RendererProfileTimers {
         RendererProfileTimers {
             cpu_time: TimeProfileCounter::new("Compositor CPU Time", false),
-            gpu_time: TimeProfileCounter::new("GPU Time", false),
+            gpu_time_text: TimeProfileCounter::new("GPU Time (text)", false),
+            gpu_time_tiling: TimeProfileCounter::new("GPU Time (tiling)", false),
+            gpu_time_complex: TimeProfileCounter::new("GPU Time (complex)", false),
+            gpu_time_total: TimeProfileCounter::new("GPU Time (total)", false),
         }
     }
 }
@@ -433,19 +439,22 @@ impl Profiler {
         ], debug_renderer, true);
 
         self.draw_counters(&[
-            &backend_profile.total_time,
-            &renderer_timers.cpu_time,
-            &renderer_timers.gpu_time,
-        ], debug_renderer, false);
-
-        self.draw_counters(&[
             &renderer_profile.draw_calls,
             &renderer_profile.vertices,
+        ], debug_renderer, true);
+
+        self.draw_counters(&[
+            &backend_profile.total_time,
+            &renderer_timers.cpu_time,
+            &renderer_timers.gpu_time_text,
+            &renderer_timers.gpu_time_tiling,
+            &renderer_timers.gpu_time_complex,
+            &renderer_timers.gpu_time_total,
         ], debug_renderer, false);
 
         self.backend_time.push(backend_profile.total_time.nanoseconds);
         self.compositor_time.push(renderer_timers.cpu_time.nanoseconds);
-        self.gpu_time.push(renderer_timers.gpu_time.nanoseconds);
+        self.gpu_time.push(renderer_timers.gpu_time_total.nanoseconds);
 
         let rect = self.backend_time.draw_graph(self.x_left, self.y_left, "CPU (backend)", debug_renderer);
         self.y_left += rect.size.height + 10.0;

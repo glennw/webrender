@@ -29,8 +29,8 @@ pub struct DebugRenderer {
 
 impl DebugRenderer {
     pub fn new(device: &mut Device) -> DebugRenderer {
-        let font_program_id = device.create_program("debug_font");
-        let color_program_id = device.create_program("debug_color");
+        let font_program_id = device.create_program("debug_font", "shared_other");
+        let color_program_id = device.create_program("debug_color", "shared_other");
 
         let font_vao = device.create_vao(VertexFormat::DebugFont, None);
         let line_vao = device.create_vao(VertexFormat::DebugColor, None);

@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use app_units::Au;
-use batch::{VertexBuffer, Batch, VertexBufferId, OffsetParams, TileParams};
+use batch::{VertexBufferId, TileParams};
 use device::{TextureId, TextureFilter};
 use euclid::{Matrix4D, Point2D, Rect, Size2D};
 use fnv::FnvHasher;
@@ -16,7 +16,7 @@ use std::ops::{Add, Sub};
 use std::path::PathBuf;
 use std::sync::Arc;
 use texture_cache::BorderType;
-use util::{self, RectVaryings};
+use tiling;
 use webrender_traits::{FontKey, Epoch, ColorF, PipelineId};
 use webrender_traits::{ImageFormat, MixBlendMode, NativeFontHandle, DisplayItem, ScrollLayerId};
 
@@ -24,35 +24,24 @@ use webrender_traits::{ImageFormat, MixBlendMode, NativeFontHandle, DisplayItem,
 pub struct DevicePixel(i32);
 
 impl DevicePixel {
-    pub fn from_u32(value: u32) -> DevicePixel {
-        DevicePixel(value as i32)
-    }
-
-    pub fn from_f32(value: f32) -> DevicePixel {
-        debug_assert!(value.fract() == 0.0);
-        DevicePixel(value as i32)
-    }
-
     pub fn new(value: f32, device_pixel_ratio: f32) -> DevicePixel {
         DevicePixel((value * device_pixel_ratio).round() as i32)
     }
 
-    // TODO(gw): Remove eventually...
-    pub fn as_u16(&self) -> u16 {
-        let DevicePixel(value) = *self;
-        value as u16
-    }
-
-    // TODO(gw): Remove eventually...
-    pub fn as_u32(&self) -> u32 {
-        let DevicePixel(value) = *self;
-        value as u32
+    pub fn from_u32(value: u32) -> DevicePixel {
+        DevicePixel(value as i32)
     }
 
     // TODO(gw): Remove eventually...
     pub fn as_f32(&self) -> f32 {
         let DevicePixel(value) = *self;
         value as f32
+    }
+
+    // TODO(gw): Remove eventually...
+    pub fn as_u32(&self) -> u32 {
+        let DevicePixel(value) = *self;
+        value as u32
     }
 }
 
@@ -113,6 +102,7 @@ pub type DrawListId = FreeListItemId;
 pub enum TextureSampler {
     Color,
     Mask,
+    Tiling,
 }
 
 pub enum VertexAttribute {
@@ -166,12 +156,6 @@ pub struct WorkVertex {
     pub v: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PackedVertexColorMode {
-    Gradient,
-    BorderCorner,
-}
-
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct PackedVertexForQuad {
@@ -205,65 +189,22 @@ pub struct PackedVertexForQuad {
     pub tile_params_index: u8,
 }
 
-impl PackedVertexForQuad {
-    pub fn new(position: &Rect<f32>,
-               colors: &[ColorF; 4],
-               uv: &RectUv<f32>,
-               muv: &RectUv<DevicePixel>,
-               color_mode: PackedVertexColorMode)
-               -> PackedVertexForQuad {
-        PackedVertexForQuad {
-            x: position.origin.x,
-            y: position.origin.y,
-            width: position.size.width,
-            height: position.size.height,
-            color_tl: PackedColor::from_color(&colors[0]),
-            color_tr: PackedColor::from_color(&colors[1]),
-            color_br: PackedColor::from_color(&colors[2]),
-            color_bl: PackedColor::from_color(&colors[3]),
-            u_tl: uv.top_left.x,
-            v_tl: uv.top_left.y,
-            u_tr: uv.top_right.x,
-            v_tr: uv.top_right.y,
-            u_bl: uv.bottom_left.x,
-            v_bl: uv.bottom_left.y,
-            u_br: uv.bottom_right.x,
-            v_br: uv.bottom_right.y,
-            mu_tl: muv.top_left.x.as_u16(),
-            mv_tl: muv.top_left.y.as_u16(),
-            mu_tr: muv.top_right.x.as_u16(),
-            mv_tr: muv.top_right.y.as_u16(),
-            mu_bl: muv.bottom_left.x.as_u16(),
-            mv_bl: muv.bottom_left.y.as_u16(),
-            mu_br: muv.bottom_right.x.as_u16(),
-            mv_br: muv.bottom_right.y.as_u16(),
-            matrix_index: 0,
-            clip_in_rect_index: 0,
-            clip_out_rect_index: 0,
-            tile_params_index: match color_mode {
-                PackedVertexColorMode::Gradient => 0x00,
-                PackedVertexColorMode::BorderCorner => 0x80,
-            },
-        }
-    }
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct PackedVertex {
+    pub pos: [f32; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct PackedVertex {
+pub struct FontVertex {
     pub x: f32,
     pub y: f32,
-    pub color: PackedColor,
-    pub u: f32,
-    pub v: f32,
-    pub mu: u16,
-    pub mv: u16,
-    pub matrix_index: u8,
-    pub clip_in_rect_index: u8,
-    pub clip_out_rect_index: u8,
-    pub tile_params_index: u8,
+    pub s: f32,
+    pub t: f32,
 }
 
+/*
 impl PackedVertex {
     pub fn from_components(x: f32,
                            y: f32,
@@ -310,7 +251,7 @@ impl PackedVertex {
             tile_params_index: 0,
         }
     }
-}
+}*/
 
 #[derive(Debug)]
 pub struct DebugFontVertex {
@@ -360,8 +301,6 @@ pub enum TextureUpdateDetails {
     Raw,
     Blit(Vec<u8>),
     Blur(Vec<u8>, Size2D<u32>, Au, TextureImage, TextureImage, BorderType),
-    /// All four corners, the tessellation index, and whether inverted, respectively.
-    BorderRadius(DevicePixel, DevicePixel, DevicePixel, DevicePixel, Option<u32>, bool, BorderType),
     /// Blur radius, border radius, box size, raster origin, and whether inverted, respectively.
     BoxShadow(DevicePixel, DevicePixel, Size2D<DevicePixel>, Point2D<DevicePixel>, bool, BorderType),
 }
@@ -401,33 +340,6 @@ impl TextureUpdateList {
     }
 }
 
-pub enum BatchUpdateOp {
-    Create(Vec<PackedVertexForQuad>),
-    Destroy,
-}
-
-pub struct BatchUpdate {
-    pub id: VertexBufferId,
-    pub op: BatchUpdateOp,
-}
-
-pub struct BatchUpdateList {
-    pub updates: Vec<BatchUpdate>,
-}
-
-impl BatchUpdateList {
-    pub fn new() -> BatchUpdateList {
-        BatchUpdateList {
-            updates: Vec::new(),
-        }
-    }
-
-    #[inline]
-    pub fn push(&mut self, update: BatchUpdate) {
-        self.updates.push(update);
-    }
-}
-
 // TODO(gw): Use bitflags crate for ClearInfo...
 // TODO(gw): Expand clear info to handle color, depth etc as needed.
 
@@ -449,61 +361,6 @@ pub struct DrawCall {
     pub instance_count: u32,
 }
 
-#[derive(Clone, Debug)]
-pub struct OutputMask {
-    pub rect: Rect<f32>,
-    pub transform: Matrix4D<f32>,
-}
-
-impl OutputMask {
-    pub fn new(rect: Rect<f32>,
-               transform: Matrix4D<f32>) -> OutputMask {
-        OutputMask {
-            rect: rect,
-            transform: transform,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct MaskRegion {
-    pub masks: Vec<OutputMask>,
-    pub draw_calls: Vec<DrawCall>,
-}
-
-impl MaskRegion {
-    pub fn new() -> MaskRegion {
-        MaskRegion {
-            masks: Vec::new(),
-            draw_calls: Vec::new(),
-        }
-    }
-
-    pub fn add_mask(&mut self,
-                    rect: Rect<f32>,
-                    transform: Matrix4D<f32>) {
-        self.masks.push(OutputMask::new(rect, transform));
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct BatchInfo {
-    pub matrix_palette: Vec<Matrix4D<f32>>,
-    pub offset_palette: Vec<OffsetParams>,
-    pub regions: Vec<MaskRegion>,
-}
-
-impl BatchInfo {
-    pub fn new(matrix_palette: Vec<Matrix4D<f32>>,
-               offset_palette: Vec<OffsetParams>) -> BatchInfo {
-        BatchInfo {
-            matrix_palette: matrix_palette,
-            offset_palette: offset_palette,
-            regions: Vec::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct CompositeBatchJob {
     pub rect: Rect<f32>,
@@ -518,60 +375,24 @@ pub struct CompositeBatchInfo {
     pub jobs: Vec<CompositeBatchJob>,
 }
 
-#[derive(Clone, Debug)]
-pub enum DrawCommand {
-    Batch(BatchInfo),
-    CompositeBatch(CompositeBatchInfo),
-    Clear(ClearInfo),
-}
-
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, PartialEq, Eq, Hash)]
 pub struct ChildLayerIndex(pub u32);
-
-#[derive(Debug)]
-pub struct DrawLayer {
-    // This layer
-    pub commands: Vec<DrawCommand>,
-    pub texture_id: Option<TextureId>,
-    pub origin: Point2D<f32>,
-    pub size: Size2D<f32>,
-
-    // Children
-    pub child_layers: Vec<DrawLayer>,
-}
-
-impl DrawLayer {
-    pub fn new(origin: Point2D<f32>,
-               size: Size2D<f32>,
-               texture_id: Option<TextureId>,
-               commands: Vec<DrawCommand>,
-               child_layers: Vec<DrawLayer>)
-               -> DrawLayer {
-        DrawLayer {
-            origin: origin,
-            size: size,
-            texture_id: texture_id,
-            commands: commands,
-            child_layers: child_layers,
-        }
-    }
-}
 
 pub struct RendererFrame {
     pub pipeline_epoch_map: HashMap<PipelineId, Epoch, BuildHasherDefault<FnvHasher>>,
     pub layers_bouncing_back: HashSet<ScrollLayerId, BuildHasherDefault<FnvHasher>>,
-    pub root_layer: DrawLayer,
+    pub frame: Option<tiling::Frame>,
 }
 
 impl RendererFrame {
     pub fn new(pipeline_epoch_map: HashMap<PipelineId, Epoch, BuildHasherDefault<FnvHasher>>,
                layers_bouncing_back: HashSet<ScrollLayerId, BuildHasherDefault<FnvHasher>>,
-               root_layer: DrawLayer)
+               frame: Option<tiling::Frame>)
                -> RendererFrame {
         RendererFrame {
             pipeline_epoch_map: pipeline_epoch_map,
             layers_bouncing_back: layers_bouncing_back,
-            root_layer: root_layer,
+            frame: frame,
         }
     }
 }
@@ -579,7 +400,7 @@ impl RendererFrame {
 pub enum ResultMsg {
     UpdateTextureCache(TextureUpdateList),
     RefreshShader(PathBuf),
-    NewFrame(RendererFrame, BatchUpdateList, BackendProfileCounters),
+    NewFrame(RendererFrame, BackendProfileCounters),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -639,40 +460,10 @@ impl FreeListItem for DrawList {
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, PartialEq, Eq)]
 pub struct DrawListItemIndex(pub u32);
 
-#[derive(Debug)]
-pub struct BatchList {
-    pub batches: Vec<Batch>,
-    pub draw_list_group_id: DrawListGroupId,
-}
-
-pub struct CompiledNode {
-    // TODO(gw): These are mutually exclusive - unify into an enum?
-    pub vertex_buffer: Option<VertexBuffer>,
-    pub vertex_buffer_id: Option<VertexBufferId>,
-
-    pub batch_list: Vec<BatchList>,
-}
-
-impl CompiledNode {
-    pub fn new() -> CompiledNode {
-        CompiledNode {
-            batch_list: Vec::new(),
-            vertex_buffer: None,
-            vertex_buffer_id: None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct RectPolygon<Varyings> {
     pub pos: Rect<f32>,
     pub varyings: Varyings,
-}
-
-impl<Varyings> RectPolygon<Varyings> {
-    pub fn is_well_formed_and_nonempty(&self) -> bool {
-        util::rect_is_well_formed_and_nonempty(&self.pos)
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -689,72 +480,6 @@ pub struct RectUv<T> {
     pub top_right: Point2D<T>,
     pub bottom_left: Point2D<T>,
     pub bottom_right: Point2D<T>,
-}
-
-impl<T: Zero + Copy> RectUv<T> {
-    pub fn zero() -> RectUv<T> {
-        RectUv {
-            top_left: Point2D::zero(),
-            top_right: Point2D::zero(),
-            bottom_left: Point2D::zero(),
-            bottom_right: Point2D::zero(),
-        }
-    }
-
-    pub fn from_uv_rect_rotation_angle(uv_rect: &RectUv<T>,
-                                       rotation_angle: BasicRotationAngle,
-                                       flip_90_degree_rotations: bool) -> RectUv<T> {
-        match (rotation_angle, flip_90_degree_rotations) {
-            (BasicRotationAngle::Upright, _) => {
-                RectUv {
-                    top_left: uv_rect.top_left,
-                    top_right: uv_rect.top_right,
-                    bottom_right: uv_rect.bottom_right,
-                    bottom_left: uv_rect.bottom_left,
-                }
-            }
-            (BasicRotationAngle::Clockwise90, true) => {
-                RectUv {
-                    top_right: uv_rect.top_left,
-                    top_left: uv_rect.top_right,
-                    bottom_left: uv_rect.bottom_right,
-                    bottom_right: uv_rect.bottom_left,
-                }
-            }
-            (BasicRotationAngle::Clockwise90, false) => {
-                RectUv {
-                    top_right: uv_rect.top_left,
-                    bottom_right: uv_rect.top_right,
-                    bottom_left: uv_rect.bottom_right,
-                    top_left: uv_rect.bottom_left,
-                }
-            }
-            (BasicRotationAngle::Clockwise180, _) => {
-                RectUv {
-                    bottom_right: uv_rect.top_left,
-                    bottom_left: uv_rect.top_right,
-                    top_left: uv_rect.bottom_right,
-                    top_right: uv_rect.bottom_left,
-                }
-            }
-            (BasicRotationAngle::Clockwise270, true) => {
-                RectUv {
-                    bottom_left: uv_rect.top_left,
-                    bottom_right: uv_rect.top_right,
-                    top_right: uv_rect.bottom_right,
-                    top_left: uv_rect.bottom_left,
-                }
-            }
-            (BasicRotationAngle::Clockwise270, false) => {
-                RectUv {
-                    bottom_left: uv_rect.top_left,
-                    top_left: uv_rect.top_right,
-                    top_right: uv_rect.bottom_right,
-                    bottom_right: uv_rect.bottom_left,
-                }
-            }
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -847,43 +572,6 @@ impl PackedVertexForTextureCacheUpdate {
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct BorderRadiusRasterOp {
-    pub outer_radius_x: DevicePixel,
-    pub outer_radius_y: DevicePixel,
-    pub inner_radius_x: DevicePixel,
-    pub inner_radius_y: DevicePixel,
-    pub index: Option<u32>,
-    pub image_format: ImageFormat,
-    pub inverted: bool,
-}
-
-impl BorderRadiusRasterOp {
-    pub fn create(outer_radius_x: DevicePixel,
-                  outer_radius_y: DevicePixel,
-                  inner_radius_x: DevicePixel,
-                  inner_radius_y: DevicePixel,
-                  inverted: bool,
-                  index: Option<u32>,
-                  image_format: ImageFormat)
-                  -> Option<BorderRadiusRasterOp> {
-        if outer_radius_x > DevicePixel::zero() || outer_radius_y > DevicePixel::zero() ||
-           inner_radius_x > DevicePixel::zero() || inner_radius_y > DevicePixel::zero() {
-            Some(BorderRadiusRasterOp {
-                outer_radius_x: outer_radius_x,
-                outer_radius_y: outer_radius_y,
-                inner_radius_x: inner_radius_x,
-                inner_radius_y: inner_radius_y,
-                index: index,
-                inverted: inverted,
-                image_format: image_format,
-            })
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct BoxShadowRasterOp {
     pub blur_radius: DevicePixel,
     pub border_radius: DevicePixel,
@@ -901,7 +589,7 @@ impl BoxShadowRasterOp {
                        part: BoxShadowPart,
                        box_rect: &Rect<f32>)
                        -> Rect<f32> {
-        let outer_extent = 3.0 * blur_radius;
+        let outer_extent = blur_radius;
         let inner_extent = outer_extent.max(border_radius);
         let extent = outer_extent + inner_extent;
         match part {
@@ -1010,16 +698,7 @@ impl GlyphKey {
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum RasterItem {
-    BorderRadius(BorderRadiusRasterOp),
     BoxShadow(BoxShadowRasterOp),
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum BasicRotationAngle {
-    Upright,
-    Clockwise90,
-    Clockwise180,
-    Clockwise270,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1041,26 +720,3 @@ pub enum CompositionOp {
     MixBlend(MixBlendMode),
     Filter(LowLevelFilterOp),
 }
-
-impl CompositionOp {
-    pub fn target_rect(&self, unfiltered_target_rect: &Rect<f32>) -> Rect<f32> {
-        match *self {
-            CompositionOp::Filter(LowLevelFilterOp::Blur(amount, AxisDirection::Horizontal)) => {
-                unfiltered_target_rect.inflate(amount.to_f32_px(), 0.0)
-            }
-            CompositionOp::Filter(LowLevelFilterOp::Blur(amount, AxisDirection::Vertical)) => {
-                unfiltered_target_rect.inflate(0.0, amount.to_f32_px())
-            }
-            _ => *unfiltered_target_rect,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum RectSide {
-    Top,
-    Right,
-    Bottom,
-    Left,
-}
-

@@ -19,7 +19,7 @@ use std::f32;
 use std::mem;
 use std::hash::{Hash, BuildHasherDefault};
 use texture_cache::{TexturePage};
-use util::{self, RectHelpers, MatrixHelpers};
+use util::{self, RectHelpers, MatrixHelpers, subtract_rect};
 use webrender_traits::{ColorF, FontKey, ImageKey, ImageRendering, ComplexClipRegion};
 use webrender_traits::{BorderDisplayItem, BorderStyle, ItemRange, AuxiliaryLists, BorderRadius};
 use webrender_traits::{BoxShadowClipMode, PipelineId};
@@ -94,6 +94,141 @@ impl OpenRect {
             x0: x0,
             y0: y0,
             y1: y1,
+        }
+    }
+}
+
+struct Sap {
+    //rectangles: Vec<Rect<f32>>,
+    //keys: Vec<T>,
+}
+
+impl Sap {
+    fn new() -> Sap {
+        Sap {
+            //rectangles: Vec::new(),
+            //keys: Vec::new(),
+        }
+    }
+
+/*
+    #[inline]
+    fn push(&mut self, rect: &Rect<f32>, key: T) {
+        self.rectangles.push(*rect);
+        self.keys.push(key);
+    }*/
+
+    fn doit<F>(&self,
+               bounding_rect: &Rect<f32>,
+               parts: &Vec<PrimitivePart>,
+               mut f: F) where F: FnMut(&Rect<f32>, Vec<usize>) {
+
+        let event_count = parts.len() * 2;
+        let mut x_events = Vec::with_capacity(event_count);
+        for (part_index, part) in parts.iter().enumerate() {
+            if bounding_rect.intersects(&part.rect) {
+                let px0 = part.rect.origin.x.max(bounding_rect.origin.x);
+                let px1 = (part.rect.origin.x + part.rect.size.width).min(bounding_rect.origin.x + bounding_rect.size.width);
+                debug_assert!(px0 != px1);
+
+                x_events.push(Event::begin(px0, part_index));
+                x_events.push(Event::end(px1, part_index));
+            }
+        }
+        x_events.sort();
+
+        let mut open_rects: Vec<OpenRect> = Vec::new();
+
+        for xe in x_events {
+            let rect = &parts[xe.key].rect;
+
+            match xe.kind {
+                EventKind::Begin => {
+                    let py0 = rect.origin.y.max(bounding_rect.origin.y);
+                    let py1 = (rect.origin.y + rect.size.height).min(bounding_rect.origin.y + bounding_rect.size.height);
+                    debug_assert!(py0 != py1);
+
+                    let mut y_events = Vec::new();
+                    y_events.push(Event::begin(py0, xe.key));
+                    y_events.push(Event::end(py1, xe.key));
+
+                    let mut new_open_rects = Vec::new();
+                    for open_rect in open_rects.drain(..) {
+                        if open_rect.y0 < py1 && py0 < open_rect.y1 {
+                            if xe.value.to_f32_px() > open_rect.x0 {
+                                // TODO(gw): Fix extra key dereferencing here!
+                                let mut user_keys = Vec::new();
+                                for key in &open_rect.keys {
+                                    user_keys.push(*key);
+                                }
+                                f(&Rect::from_points(open_rect.x0,
+                                                     open_rect.y0,
+                                                     xe.value.to_f32_px(),
+                                                     open_rect.y1),
+                                  user_keys);
+                            }
+                            for key in open_rect.keys {
+                                y_events.push(Event::begin(open_rect.y0, key));
+                                y_events.push(Event::end(open_rect.y1, key));
+                            }
+                        } else {
+                            new_open_rects.push(open_rect);
+                        }
+                    }
+                    open_rects = new_open_rects;
+
+                    y_events.sort();
+                    let mut active_y = HashSet::new();
+                    let mut y0 = y_events[0].value;
+
+                    for i in 0..y_events.len() {
+                        let ye = &y_events[i];
+
+                        if i == y_events.len()-1 || (i > 0 && ye.value > y_events[i-1].value) {
+                            if active_y.len() > 0 && ye.value > y0 {
+                                open_rects.push(OpenRect::new(active_y.clone(), xe.value.to_f32_px(), y0.to_f32_px(), ye.value.to_f32_px()));
+                            }
+                            y0 = ye.value;
+                        }
+
+                        match ye.kind {
+                            EventKind::Begin => {
+                                active_y.insert(ye.key);
+                            }
+                            EventKind::End => {
+                                active_y.remove(&ye.key);
+                            }
+                        }
+                    }
+                }
+                EventKind::End => {
+                    let mut new_open_rects = Vec::new();
+                    for mut rect in open_rects.drain(..) {
+                        if rect.keys.contains(&xe.key) {
+                            if xe.value.to_f32_px() > rect.x0 {
+                                // TODO(gw): Fix extra key dereferencing here!
+                                let mut user_keys = Vec::new();
+                                for key in &rect.keys {
+                                    user_keys.push(*key);
+                                }
+                                f(&Rect::from_points(rect.x0,
+                                                     rect.y0,
+                                                     xe.value.to_f32_px(),
+                                                     rect.y1),
+                                  user_keys);
+                            }
+                            rect.keys.remove(&xe.key);
+                            rect.x0 = xe.value.to_f32_px();
+                            if rect.keys.len() > 0 {
+                                new_open_rects.push(rect);
+                            }
+                        } else {
+                            new_open_rects.push(rect);
+                        }
+                    }
+                    open_rects = new_open_rects;
+                }
+            }
         }
     }
 }
@@ -226,7 +361,7 @@ impl PackedDrawCommand {
         self.prim_indices[cmd_index] = prim_index as u32;
     }
 
-    fn new(tile_rect: Rect<f32>, layer_index_in_ubo: u32) -> PackedDrawCommand {
+    fn new(tile_rect: &Rect<f32>, layer_index_in_ubo: u32) -> PackedDrawCommand {
         PackedDrawCommand {
             tile_p0: tile_rect.origin,
             tile_p1: tile_rect.bottom_right(),
@@ -537,7 +672,7 @@ pub enum PrimitiveKind {
 }
 
 struct PrimitivePartList {
-    color_texture_id: TextureId,
+    //color_texture_id: TextureId,
     //mask_texture_id: TextureId,
     parts: Vec<PrimitivePart>,
 }
@@ -545,20 +680,65 @@ struct PrimitivePartList {
 impl PrimitivePartList {
     fn new() -> PrimitivePartList {
         PrimitivePartList {
-            color_texture_id: TextureId(0),
+            //color_texture_id: TextureId(0),
             //mask_texture_id: TextureId(0),
             parts: Vec::new(),
         }
     }
 
     #[inline]
-    fn push_parts(&mut self, parts: &[PrimitivePart]) {
-        self.parts.extend_from_slice(parts);
+    fn push_parts(&mut self,
+                  parts: &[PrimitivePart],
+                  clip: Option<&Clip>) {
+        for part in parts {
+            self.push_part(part, clip);
+        }
     }
 
     #[inline]
-    fn push_part(&mut self, part: PrimitivePart) {
-        self.parts.push(part);
+    fn push_part(&mut self,
+                 part: &PrimitivePart,
+                 clip: Option<&Clip>) {
+        match clip {
+            Some(clip) => {
+                self.parts.extend_from_slice(&part.clip(clip));
+            }
+            None => {
+                self.parts.push(part.clone());
+            }
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone)]
+pub struct ClipInfo {
+    ref_point: Point2D<f32>,
+    width: Point2D<f32>,
+    outer_radius: Point2D<f32>,
+    inner_radius: Point2D<f32>,
+}
+
+impl ClipInfo {
+    fn new(ref_point: Point2D<f32>,
+           width: Point2D<f32>,
+           outer_radius: Point2D<f32>,
+           inner_radius: Point2D<f32>) -> ClipInfo {
+        ClipInfo {
+            ref_point: ref_point,
+            width: width,
+            outer_radius: outer_radius,
+            inner_radius: inner_radius,
+        }
+    }
+
+    fn invalid() -> ClipInfo {
+        ClipInfo {
+            ref_point: Point2D::zero(),
+            width: Point2D::zero(),
+            outer_radius: Point2D::new(f32::MAX, f32::MAX),
+            inner_radius: Point2D::zero(),
+        }
     }
 }
 
@@ -574,18 +754,15 @@ pub struct PrimitivePart {
     pub rect_kind: RectangleKind,
     pub rotation: RotationKind,
     pub opacity: Opacity,
-    pub clip_index: ClipIndex,
-    pub corner_kind: CornerKind,
-    pub padding: [u32; 2],
+    pub clip_info: ClipInfo,
 }
 
 impl PrimitivePart {
     fn solid(origin: Point2D<f32>,
              size: Size2D<f32>,
              color: ColorF,
-             clip_index: Option<ClipIndex>,
-             corner_kind: CornerKind) -> PrimitivePart {
-        let opacity = match clip_index {
+             clip_info: Option<ClipInfo>) -> PrimitivePart {
+        let opacity = match clip_info {
             Some(..) => Opacity::Translucent,
             None => Opacity::from_color(&color),
         };
@@ -600,9 +777,7 @@ impl PrimitivePart {
             rect_kind: RectangleKind::Solid,
             rotation: RotationKind::Angle0,
             opacity: opacity,
-            clip_index: clip_index.unwrap_or(INVALID_CLIP_INDEX),
-            corner_kind: corner_kind,
-            padding: [0, 0],
+            clip_info: clip_info.unwrap_or(ClipInfo::invalid()),
         }
     }
 
@@ -621,9 +796,7 @@ impl PrimitivePart {
             rect_kind: RectangleKind::Solid,
             rotation: RotationKind::Angle0,
             opacity: Opacity::Translucent,
-            clip_index: INVALID_CLIP_INDEX,
-            corner_kind: CornerKind::TopLeft,
-            padding: [0, 0],
+            clip_info: ClipInfo::invalid(),
         }
     }
 
@@ -643,9 +816,7 @@ impl PrimitivePart {
             rect_kind: RectangleKind::Solid,
             rotation: RotationKind::Angle0,
             opacity: opacity,
-            clip_index: INVALID_CLIP_INDEX,
-            corner_kind: CornerKind::TopLeft,
-            padding: [0, 0],
+            clip_info: ClipInfo::invalid(),
         }
     }
 
@@ -664,9 +835,7 @@ impl PrimitivePart {
             rect_kind: rect_kind,
             rotation: RotationKind::Angle0,
             opacity: Opacity::from_colors(&[&color0, &color1]),
-            clip_index: INVALID_CLIP_INDEX,
-            corner_kind: CornerKind::TopLeft,
-            padding: [0, 0],
+            clip_info: ClipInfo::invalid(),
         }
     }
 
@@ -675,9 +844,8 @@ impl PrimitivePart {
           color0: ColorF,
           color1: ColorF,
           rotation: RotationKind,
-          clip_index: Option<ClipIndex>,
-          corner_kind: CornerKind) -> PrimitivePart {
-        let opacity = match clip_index {
+          clip_info: Option<ClipInfo>) -> PrimitivePart {
+        let opacity = match clip_info {
             Some(..) => Opacity::Translucent,
             None => Opacity::from_colors(&[&color0, &color1]),
         };
@@ -692,9 +860,7 @@ impl PrimitivePart {
             rect_kind: RectangleKind::Solid,
             rotation: rotation,
             opacity: opacity,
-            clip_index: clip_index.unwrap_or(INVALID_CLIP_INDEX),
-            corner_kind: corner_kind,
-            padding: [0, 0],
+            clip_info: clip_info.unwrap_or(ClipInfo::invalid()),
         }
     }
 
@@ -736,115 +902,178 @@ impl PrimitivePart {
             rect_kind: rect_kind,
             rotation: rotation,
             opacity: Opacity::from_color_and_texture(&color, texture_is_opaque),
-            clip_index: INVALID_CLIP_INDEX,
-            corner_kind: CornerKind::TopLeft,
-            padding: [0, 0],
+            clip_info: ClipInfo::invalid(),
         }
     }
 
-    fn clip(&self, clip: &Clip, clip_index: ClipIndex) -> Vec<PrimitivePart> {
+    fn interp(&self, clipped_rect: &Rect<f32>) -> PrimitivePart {
+        debug_assert!(clipped_rect.size.width > 0.0);
+        debug_assert!(clipped_rect.size.height > 0.0);
+
+        let f0 = Point2D::new((clipped_rect.origin.x - self.rect.origin.x) / self.rect.size.width,
+                              (clipped_rect.origin.y - self.rect.origin.y) / self.rect.size.height);
+
+        let f1 = Point2D::new((clipped_rect.origin.x + clipped_rect.size.width - self.rect.origin.x) / self.rect.size.width,
+                              (clipped_rect.origin.y + clipped_rect.size.height - self.rect.origin.y) / self.rect.size.height);
+
+        let st0 = Point2D::new(util::lerp(self.st0.x, self.st1.x, f0.x),
+                               util::lerp(self.st0.y, self.st1.y, f0.y));
+
+        let st1 = Point2D::new(util::lerp(self.st0.x, self.st1.x, f1.x),
+                               util::lerp(self.st0.y, self.st1.y, f1.y));
+
+        // TODO: Need to do color bilerp in some cases too!?
+        PrimitivePart {
+            rect: *clipped_rect,
+            st0: st0,
+            st1: st1,
+            color0: self.color0,
+            color1: self.color1,
+            kind: self.kind,
+            rect_kind: self.rect_kind,
+            rotation: self.rotation,
+            opacity: self.opacity,
+            clip_info: ClipInfo::invalid(),
+        }
+    }
+
+    fn clip(&self, clip: &Clip) -> Vec<PrimitivePart> {
         let mut parts = Vec::new();
+        let clip_rect = Rect::new(clip.p0, Size2D::new(clip.p1.x - clip.p0.x, clip.p1.y - clip.p0.y));
 
-        // TODO(gw): Support irregular radii...
-        let p0 = self.rect.origin;
-        let p1 = self.rect.bottom_right();
-        let r = clip.top_left.outer_radius_x;
+        match clip.clip_kind {
+            ClipKind::ClipIn => {
+                // TODO(gw): Support corner radii.
+                let rects = subtract_rect(&self.rect, &clip_rect);
 
-        let inner_top = Rect::from_points(p0.x + r,
-                                          p0.y,
-                                          p1.x - r,
-                                          p0.y + r);
+                for rect in rects {
+                    parts.push(self.interp(&rect));
+                }
+            }
+            ClipKind::ClipOut => {
+                // TODO(gw): Support irregular radii...
+                let r = clip.top_left.outer_radius_x;
 
-        let inner_bottom = Rect::from_points(p0.x + r,
-                                             p1.y - r,
-                                             p1.x - r,
-                                             p1.y);
+                if r == 0.0 {
+                    if clip_rect.contains_rect(&self.rect) {
+                        // TODO(gw): Optimize common path to not include a heap allocation...
+                        parts.push(self.clone());
+                    } else {
+                        let clipped_rect = clip_rect.intersection(&self.rect);
 
-        let inner_left = Rect::from_points(p0.x,
-                                           p0.y + r,
-                                           p0.x + r,
-                                           p1.y - r);
+                        if let Some(clipped_rect) = clipped_rect {
+                            parts.push(self.interp(&clipped_rect));
+                        }
+                    }
+                } else {
+                    let p0 = self.rect.origin;
+                    let p1 = self.rect.bottom_right();
 
-        let inner_right = Rect::from_points(p1.x - r,
-                                            p0.y + r,
-                                            p1.x,
-                                            p1.y - r);
+                    let inner_top = Rect::from_points(p0.x + r,
+                                                      p0.y,
+                                                      p1.x - r,
+                                                      p0.y + r);
 
-        let inner_mid = Rect::from_points(p0.x + r,
-                                          p0.y + r,
-                                          p1.x - r,
-                                          p1.y - r);
+                    let inner_bottom = Rect::from_points(p0.x + r,
+                                                         p1.y - r,
+                                                         p1.x - r,
+                                                         p1.y);
 
-        if let Some(rect) = self.rect.intersection(&inner_top) {
-            parts.push(PrimitivePart::solid(rect.origin,
-                                            rect.size,
-                                            self.color0,
-                                            None,
-                                            CornerKind::TopLeft));
-        }
+                    let inner_left = Rect::from_points(p0.x,
+                                                       p0.y + r,
+                                                       p0.x + r,
+                                                       p1.y - r);
 
-        if let Some(rect) = self.rect.intersection(&inner_left) {
-            parts.push(PrimitivePart::solid(rect.origin,
-                                            rect.size,
-                                            self.color0,
-                                            None,
-                                            CornerKind::TopLeft));
-        }
+                    let inner_right = Rect::from_points(p1.x - r,
+                                                        p0.y + r,
+                                                        p1.x,
+                                                        p1.y - r);
 
-        if let Some(rect) = self.rect.intersection(&inner_right) {
-            parts.push(PrimitivePart::solid(rect.origin,
-                                            rect.size,
-                                            self.color0,
-                                            None,
-                                            CornerKind::TopLeft));
-        }
+                    let inner_mid = Rect::from_points(p0.x + r,
+                                                      p0.y + r,
+                                                      p1.x - r,
+                                                      p1.y - r);
 
-        if let Some(rect) = self.rect.intersection(&inner_bottom) {
-            parts.push(PrimitivePart::solid(rect.origin,
-                                            rect.size,
-                                            self.color0,
-                                            None,
-                                            CornerKind::TopLeft));
-        }
+                    if let Some(rect) = self.rect.intersection(&inner_top) {
+                        parts.push(PrimitivePart::solid(rect.origin,
+                                                        rect.size,
+                                                        self.color0,
+                                                        None));
+                    }
 
-        if let Some(rect) = self.rect.intersection(&inner_mid) {
-            parts.push(PrimitivePart::solid(rect.origin,
-                                            rect.size,
-                                            self.color0,
-                                            None,
-                                            CornerKind::TopLeft));
-        }
+                    if let Some(rect) = self.rect.intersection(&inner_left) {
+                        parts.push(PrimitivePart::solid(rect.origin,
+                                                        rect.size,
+                                                        self.color0,
+                                                        None));
+                    }
 
-        if let Some(rect) = self.rect.intersection(&clip.top_left.rect) {
-            parts.push(PrimitivePart::solid(rect.origin,
-                                            rect.size,
-                                            self.color0,
-                                            Some(clip_index),
-                                            CornerKind::TopLeft));
-        }
+                    if let Some(rect) = self.rect.intersection(&inner_right) {
+                        parts.push(PrimitivePart::solid(rect.origin,
+                                                        rect.size,
+                                                        self.color0,
+                                                        None));
+                    }
 
-        if let Some(rect) = self.rect.intersection(&clip.top_right.rect) {
-            parts.push(PrimitivePart::solid(rect.origin,
-                                            rect.size,
-                                            self.color0,
-                                            Some(clip_index),
-                                            CornerKind::TopRight));
-        }
+                    if let Some(rect) = self.rect.intersection(&inner_bottom) {
+                        parts.push(PrimitivePart::solid(rect.origin,
+                                                        rect.size,
+                                                        self.color0,
+                                                        None));
+                    }
 
-        if let Some(rect) = self.rect.intersection(&clip.bottom_left.rect) {
-            parts.push(PrimitivePart::solid(rect.origin,
-                                            rect.size,
-                                            self.color0,
-                                            Some(clip_index),
-                                            CornerKind::BottomLeft));
-        }
+                    if let Some(rect) = self.rect.intersection(&inner_mid) {
+                        parts.push(PrimitivePart::solid(rect.origin,
+                                                        rect.size,
+                                                        self.color0,
+                                                        None));
+                    }
 
-        if let Some(rect) = self.rect.intersection(&clip.bottom_right.rect) {
-            parts.push(PrimitivePart::solid(rect.origin,
-                                            rect.size,
-                                            self.color0,
-                                            Some(clip_index),
-                                            CornerKind::BottomRight));
+                    if let Some(rect) = self.rect.intersection(&clip.top_left.rect) {
+                        let clip_info = ClipInfo::new(clip.top_left.rect.bottom_right(),
+                                                      Point2D::zero(),
+                                                      Point2D::new(clip.top_left.outer_radius_x, clip.top_left.outer_radius_y),
+                                                      Point2D::new(clip.top_left.inner_radius_x, clip.top_left.inner_radius_y));
+                        parts.push(PrimitivePart::solid(rect.origin,
+                                                        rect.size,
+                                                        self.color0,
+                                                        Some(clip_info)));
+                    }
+
+                    if let Some(rect) = self.rect.intersection(&clip.top_right.rect) {
+                        let clip_info = ClipInfo::new(clip.top_right.rect.bottom_left(),
+                                                      Point2D::zero(),
+                                                      Point2D::new(clip.top_right.outer_radius_x, clip.top_right.outer_radius_y),
+                                                      Point2D::new(clip.top_right.inner_radius_x, clip.top_right.inner_radius_y));
+                        parts.push(PrimitivePart::solid(rect.origin,
+                                                        rect.size,
+                                                        self.color0,
+                                                        Some(clip_info)));
+                    }
+
+                    if let Some(rect) = self.rect.intersection(&clip.bottom_left.rect) {
+                        let clip_info = ClipInfo::new(clip.bottom_left.rect.top_right(),
+                                                      Point2D::zero(),
+                                                      Point2D::new(clip.bottom_left.outer_radius_x, clip.bottom_left.outer_radius_y),
+                                                      Point2D::new(clip.bottom_left.inner_radius_x, clip.bottom_left.inner_radius_y));
+                        parts.push(PrimitivePart::solid(rect.origin,
+                                                        rect.size,
+                                                        self.color0,
+                                                        Some(clip_info)));
+                    }
+
+                    if let Some(rect) = self.rect.intersection(&clip.bottom_right.rect) {
+                        let clip_info = ClipInfo::new(clip.bottom_right.rect.origin,
+                                                      Point2D::zero(),
+                                                      Point2D::new(clip.bottom_right.outer_radius_x, clip.bottom_right.outer_radius_y),
+                                                      Point2D::new(clip.bottom_right.inner_radius_x, clip.bottom_right.inner_radius_y));
+                        parts.push(PrimitivePart::solid(rect.origin,
+                                                        rect.size,
+                                                        self.color0,
+                                                        Some(clip_info)));
+                    }
+                }
+            }
         }
 
         parts
@@ -912,540 +1141,13 @@ impl LayerTemplate {
 
         resource_list
     }
-
-    // FIXME(pcwalton): Assumes rectangles are well-formed with origin in TL
-    fn add_box_shadow_corner(&self,
-                             top_left: &Point2D<f32>,
-                             bottom_right: &Point2D<f32>,
-                             corner_area_top_left: &Point2D<f32>,
-                             corner_area_bottom_right: &Point2D<f32>,
-                             color: &ColorF,
-                             rotation_angle: RotationKind,
-                             uv_rect: &RectUv<f32>,
-                             is_opaque: bool,
-                             part_list: &mut Vec<PrimitivePart>) {
-        let corner_area_rect =
-            Rect::new(*corner_area_top_left,
-                      Size2D::new(corner_area_bottom_right.x - corner_area_top_left.x,
-                                  corner_area_bottom_right.y - corner_area_top_left.y));
-
-        let wanted_rect = Rect::new(*top_left, Size2D::new(bottom_right.x - top_left.x,
-                                                           bottom_right.y - top_left.y));
-
-        let clipped_rect = corner_area_rect.intersection(&wanted_rect);
-
-        // TODO(gw): Removing clipping here means the UVs can be wrong - they need to be lerp'd based on the clipped_rect!!!
-
-        if let Some(clipped_rect) = clipped_rect {
-            debug_assert!(clipped_rect.size.width > 0.0);
-            debug_assert!(clipped_rect.size.height > 0.0);
-
-            let mut f0 = Point2D::new((clipped_rect.origin.x - wanted_rect.origin.x) / wanted_rect.size.width,
-                                      (clipped_rect.origin.y - wanted_rect.origin.y) / wanted_rect.size.height);
-
-            let mut f1 = Point2D::new((clipped_rect.origin.x + clipped_rect.size.width - wanted_rect.origin.x) / wanted_rect.size.width,
-                                      (clipped_rect.origin.y + clipped_rect.size.height - wanted_rect.origin.y) / wanted_rect.size.height);
-
-            match rotation_angle {
-                RotationKind::Angle0 => {}
-                RotationKind::Angle90 => {
-                    f0.x = 1.0 - f0.x;
-                    f1.x = 1.0 - f1.x;
-                }
-                RotationKind::Angle180 => {
-                    f0.x = 1.0 - f0.x;
-                    f1.x = 1.0 - f1.x;
-                    f0.y = 1.0 - f0.y;
-                    f1.y = 1.0 - f1.y;
-                }
-                RotationKind::Angle270 => {
-                    f0.y = 1.0 - f0.y;
-                    f1.y = 1.0 - f1.y;
-                }
-            }
-
-            let st0 = Point2D::new(util::lerp(uv_rect.top_left.x, uv_rect.bottom_right.x, f0.x),
-                                   util::lerp(uv_rect.top_left.y, uv_rect.bottom_right.y, f0.y));
-
-            let st1 = Point2D::new(util::lerp(uv_rect.top_left.x, uv_rect.bottom_right.x, f1.x),
-                                   util::lerp(uv_rect.top_left.y, uv_rect.bottom_right.y, f1.y));
-
-            part_list.push(PrimitivePart::box_shadow_texture(clipped_rect,
-                                                             *color,
-                                                             st0,
-                                                             st1,
-                                                             is_opaque,
-                                                             rotation_angle,
-                                                             RectangleKind::Solid));
-        }
-    }
-
-    fn add_box_shadow_edge(&self,
-                           top_left: &Point2D<f32>,
-                           bottom_right: &Point2D<f32>,
-                           color: &ColorF,
-                           rotation_angle: RotationKind,
-                           uv_rect: &RectUv<f32>,
-                           is_opaque: bool,
-                           part_list: &mut Vec<PrimitivePart>) {
-        if top_left.x >= bottom_right.x || top_left.y >= bottom_right.y {
-            return
-        }
-
-        let rect = Rect::new(*top_left, Size2D::new(bottom_right.x - top_left.x,
-                                                    bottom_right.y - top_left.y));
-
-        part_list.push(PrimitivePart::box_shadow_texture(rect,
-                                                         *color,
-                                                         uv_rect.top_left,
-                                                         uv_rect.bottom_right,
-                                                         is_opaque,
-                                                         rotation_angle,
-                                                         RectangleKind::BoxShadowEdge));
-    }
-
-    fn add_box_shadow_sides(&self,
-                            metrics: &BoxShadowMetrics,
-                            color: &ColorF,
-                            uv_rect: &RectUv<f32>,
-                            is_opaque: bool,
-                            part_list: &mut Vec<PrimitivePart>) {
-        // Draw the sides.
-        //
-        //      +--+------------------+--+
-        //      |  |##################|  |
-        //      +--+------------------+--+
-        //      |##|                  |##|
-        //      |##|                  |##|
-        //      |##|                  |##|
-        //      +--+------------------+--+
-        //      |  |##################|  |
-        //      +--+------------------+--+
-
-        let horizontal_size = Size2D::new(metrics.br_inner.x - metrics.tl_inner.x,
-                                          metrics.edge_size);
-        let vertical_size = Size2D::new(metrics.edge_size,
-                                        metrics.br_inner.y - metrics.tl_inner.y);
-        let top_rect = Rect::new(metrics.tl_outer + Point2D::new(metrics.edge_size, 0.0),
-                                 horizontal_size);
-        let right_rect =
-            Rect::new(metrics.tr_outer + Point2D::new(-metrics.edge_size, metrics.edge_size),
-                      vertical_size);
-        let bottom_rect =
-            Rect::new(metrics.bl_outer + Point2D::new(metrics.edge_size, -metrics.edge_size),
-                      horizontal_size);
-        let left_rect = Rect::new(metrics.tl_outer + Point2D::new(0.0, metrics.edge_size),
-                                  vertical_size);
-
-        self.add_box_shadow_edge(&top_rect.origin,
-                                 &top_rect.bottom_right(),
-                                 color,
-                                 RotationKind::Angle90,
-                                 uv_rect,
-                                 is_opaque,
-                                 part_list);
-        self.add_box_shadow_edge(&right_rect.origin,
-                                 &right_rect.bottom_right(),
-                                 color,
-                                 RotationKind::Angle180,
-                                 uv_rect,
-                                 is_opaque,
-                                 part_list);
-        self.add_box_shadow_edge(&bottom_rect.origin,
-                                 &bottom_rect.bottom_right(),
-                                 color,
-                                 RotationKind::Angle270,
-                                 uv_rect,
-                                 is_opaque,
-                                 part_list);
-        self.add_box_shadow_edge(&left_rect.origin,
-                                 &left_rect.bottom_right(),
-                                 color,
-                                 RotationKind::Angle0,
-                                 uv_rect,
-                                 is_opaque,
-                                 part_list);
-    }
-
-    fn add_box_shadow_corners(&self,
-                              metrics: &BoxShadowMetrics,
-                              box_bounds: &Rect<f32>,
-                              color: &ColorF,
-                              uv_rect: &RectUv<f32>,
-                              is_opaque: bool,
-                              part_list: &mut Vec<PrimitivePart>) {
-        // Draw the corners.
-        //
-        //      +--+------------------+--+
-        //      |##|                  |##|
-        //      +--+------------------+--+
-        //      |  |                  |  |
-        //      |  |                  |  |
-        //      |  |                  |  |
-        //      +--+------------------+--+
-        //      |##|                  |##|
-        //      +--+------------------+--+
-
-        // Prevent overlap of the box shadow corners when the size of the blur is larger than the
-        // size of the box.
-        let center = Point2D::new(box_bounds.origin.x + box_bounds.size.width / 2.0,
-                                  box_bounds.origin.y + box_bounds.size.height / 2.0);
-
-        self.add_box_shadow_corner(&metrics.tl_outer,
-                                   &Point2D::new(metrics.tl_outer.x + metrics.edge_size,
-                                                 metrics.tl_outer.y + metrics.edge_size),
-                                   &metrics.tl_outer,
-                                   &center,
-                                   &color,
-                                   RotationKind::Angle0,
-                                   uv_rect,
-                                   is_opaque,
-                                   part_list);
-        self.add_box_shadow_corner(&Point2D::new(metrics.tr_outer.x - metrics.edge_size,
-                                                 metrics.tr_outer.y),
-                                   &Point2D::new(metrics.tr_outer.x,
-                                                 metrics.tr_outer.y + metrics.edge_size),
-                                   &Point2D::new(center.x, metrics.tr_outer.y),
-                                   &Point2D::new(metrics.tr_outer.x, center.y),
-                                   &color,
-                                   RotationKind::Angle90,
-                                   uv_rect,
-                                   is_opaque,
-                                   part_list);
-        self.add_box_shadow_corner(&Point2D::new(metrics.br_outer.x - metrics.edge_size,
-                                                 metrics.br_outer.y - metrics.edge_size),
-                                   &Point2D::new(metrics.br_outer.x, metrics.br_outer.y),
-                                   &center,
-                                   &metrics.br_outer,
-                                   &color,
-                                   RotationKind::Angle180,
-                                   uv_rect,
-                                   is_opaque,
-                                   part_list);
-        self.add_box_shadow_corner(&Point2D::new(metrics.bl_outer.x,
-                                                 metrics.bl_outer.y - metrics.edge_size),
-                                   &Point2D::new(metrics.bl_outer.x + metrics.edge_size,
-                                                 metrics.bl_outer.y),
-                                   &Point2D::new(metrics.bl_outer.x, center.y),
-                                   &Point2D::new(center.x, metrics.bl_outer.y),
-                                   &color,
-                                   RotationKind::Angle270,
-                                   uv_rect,
-                                   is_opaque,
-                                   part_list);
-    }
-
-    fn build_prim_parts(&self,
-                        prim_index_buffer: &Vec<PrimitiveIndex>,
-                        text_buffer: &TextBuffer,
-                        auxiliary_lists: &AuxiliaryLists,
-                        resource_cache: &ResourceCache,
-                        frame_id: FrameId,
-                        clips: &mut Vec<Clip>) -> PrimitivePartList {
-        let mut prim_part_list = PrimitivePartList::new();
-
-        for prim_index in prim_index_buffer {
-            let PrimitiveIndex(pi) = *prim_index;
-            let prim = &self.primitives[pi as usize];
-            //debug_assert!(prim.rect.intersects(&layer_rect));
-
-            match prim.details {
-                PrimitiveDetails::Rectangle(ref details) => {
-                    let part = PrimitivePart::solid(prim.rect.origin,
-                                                    prim.rect.size,
-                                                    details.color,
-                                                    None,
-                                                    CornerKind::TopLeft);
-
-                    if let Some(clip_index) = prim.clip {
-                        let ClipIndex(ci) = clip_index;
-                        let clip = &clips[ci as usize];
-                        prim_part_list.push_parts(&part.clip(clip, clip_index));
-                    } else {
-                        prim_part_list.push_part(part);
-                    }
-                }
-                PrimitiveDetails::Image(ref details) => {
-                    let image_info = resource_cache.get_image(details.image_key,
-                                                              details.image_rendering,
-                                                              frame_id);
-                    let uv_rect = image_info.uv_rect();
-
-                    assert!(prim_part_list.color_texture_id == TextureId(0) ||
-                            prim_part_list.color_texture_id == image_info.texture_id);
-                    prim_part_list.color_texture_id = image_info.texture_id;
-
-                    let part = PrimitivePart::image(prim.rect.origin,
-                                                    prim.rect.size,
-                                                    uv_rect.top_left,
-                                                    uv_rect.bottom_right,
-                                                    Opacity::from_bool(image_info.is_opaque));
-                    prim_part_list.push_part(part);
-                }
-                PrimitiveDetails::Border(ref d) => {
-                    let need_clip = d.radius.top_left != Size2D::zero() ||
-                                    d.radius.top_right != Size2D::zero() ||
-                                    d.radius.bottom_left != Size2D::zero() ||
-                                    d.radius.bottom_right != Size2D::zero();
-
-                    let clip_index = if need_clip {
-                        let clip_index = ClipIndex(clips.len() as u32);
-
-                        // TODO(gw): This is all wrong for non-uniform borders!
-                        let inner_radius = BorderRadius {
-                            top_left: Size2D::new(d.radius.top_left.width - d.left_width,
-                                                  d.radius.top_left.width - d.left_width),
-                            top_right: Size2D::new(d.radius.top_right.width - d.right_width,
-                                                   d.radius.top_right.width - d.right_width),
-                            bottom_left: Size2D::new(d.radius.bottom_left.width - d.left_width,
-                                                     d.radius.bottom_left.width - d.left_width),
-                            bottom_right: Size2D::new(d.radius.bottom_right.width - d.right_width,
-                                                      d.radius.bottom_right.width - d.right_width),
-                        };
-
-                        let clip = Clip::from_border_radius(&prim.rect,
-                                                            &d.radius,
-                                                            &inner_radius,
-                                                            ClipKind::ClipOut);
-
-                        clips.push(clip);
-                        Some(clip_index)
-                    } else {
-                        None
-                    };
-
-                    let parts = [
-                        PrimitivePart::solid(Point2D::new(d.tl_outer.x, d.tl_inner.y),
-                                             Size2D::new(d.left_width, d.bl_inner.y - d.tl_inner.y),
-                                             d.left_color,
-                                             None,
-                                             CornerKind::TopLeft),
-                        PrimitivePart::solid(Point2D::new(d.tl_inner.x, d.tl_outer.y),
-                                             Size2D::new(d.tr_inner.x - d.tl_inner.x, d.tr_outer.y + d.top_width - d.tl_outer.y),
-                                             d.top_color,
-                                             None,
-                                             CornerKind::TopLeft),
-                        PrimitivePart::solid(Point2D::new(d.br_outer.x - d.right_width, d.tr_inner.y),
-                                             Size2D::new(d.right_width, d.br_inner.y - d.tr_inner.y),
-                                             d.right_color,
-                                             None,
-                                             CornerKind::TopLeft),
-                        PrimitivePart::solid(Point2D::new(d.bl_inner.x, d.bl_outer.y - d.bottom_width),
-                                             Size2D::new(d.br_inner.x - d.bl_inner.x, d.br_outer.y - d.bl_outer.y + d.bottom_width),
-                                             d.bottom_color,
-                                             None,
-                                             CornerKind::TopLeft),
-                        PrimitivePart::bc(d.tl_outer,
-                                          Size2D::new(d.tl_inner.x - d.tl_outer.x, d.tl_inner.y - d.tl_outer.y),
-                                          d.left_color,
-                                          d.top_color,
-                                          RotationKind::Angle0,
-                                          clip_index,
-                                          CornerKind::TopLeft),
-                        PrimitivePart::bc(Point2D::new(d.tr_inner.x, d.tr_outer.y),
-                                          Size2D::new(d.tr_outer.x - d.tr_inner.x, d.tr_inner.y - d.tr_outer.y),
-                                          d.top_color,
-                                          d.right_color,
-                                          RotationKind::Angle90,
-                                          clip_index,
-                                          CornerKind::TopRight),
-                        PrimitivePart::bc(d.br_inner,
-                                          Size2D::new(d.br_outer.x - d.br_inner.x, d.br_outer.y - d.br_inner.y),
-                                          d.right_color,
-                                          d.bottom_color,
-                                          RotationKind::Angle180,
-                                          clip_index,
-                                          CornerKind::BottomRight),
-                        PrimitivePart::bc(Point2D::new(d.bl_outer.x, d.bl_inner.y),
-                                          Size2D::new(d.bl_inner.x - d.bl_outer.x, d.bl_outer.y - d.bl_inner.y),
-                                          d.bottom_color,
-                                          d.left_color,
-                                          RotationKind::Angle270,
-                                          clip_index,
-                                          CornerKind::BottomLeft),
-                    ];
-
-                    prim_part_list.push_parts(&parts);
-                }
-                PrimitiveDetails::BoxShadow(ref details) => {
-                    let mut parts = Vec::new();
-
-                    // Fast path.
-                    if details.blur_radius == 0.0 &&
-                       details.spread_radius == 0.0 &&
-                       details.clip_mode == BoxShadowClipMode::None {
-                        parts.push(PrimitivePart::solid(prim.rect.origin,
-                                                        prim.rect.size,
-                                                        details.color,
-                                                        None,
-                                                        CornerKind::TopLeft));
-                    } else {
-                        let inverted = match details.clip_mode {
-                            BoxShadowClipMode::Outset | BoxShadowClipMode::None => false,
-                            BoxShadowClipMode::Inset => true,
-                        };
-
-                        let edge_image = match BoxShadowRasterOp::create_edge(details.blur_radius,
-                                                                              details.border_radius,
-                                                                              &prim.rect,
-                                                                              inverted,
-                                                                              self.device_pixel_ratio) {
-                            Some(raster_item) => {
-                                let raster_item = RasterItem::BoxShadow(raster_item);
-                                resource_cache.get_raster(&raster_item, frame_id)
-                            }
-                            None => resource_cache.get_dummy_color_image(),
-                        };
-
-                        // TODO(gw): A hack for texture ids here - need a better solution!
-                        assert!(prim_part_list.color_texture_id == TextureId(0) ||
-                                prim_part_list.color_texture_id == edge_image.texture_id);
-                        prim_part_list.color_texture_id = edge_image.texture_id;
-
-                        let corner_image = match BoxShadowRasterOp::create_corner(details.blur_radius,
-                                                                                  details.border_radius,
-                                                                                  &prim.rect,
-                                                                                  inverted,
-                                                                                  self.device_pixel_ratio) {
-                            Some(raster_item) => {
-                                let raster_item = RasterItem::BoxShadow(raster_item);
-                                resource_cache.get_raster(&raster_item, frame_id)
-                            }
-                            None => resource_cache.get_dummy_color_image(),
-                        };
-
-                        // TODO(gw): A hack for texture ids here - need a better solution!
-                        assert!(prim_part_list.color_texture_id == TextureId(0) ||
-                                prim_part_list.color_texture_id == corner_image.texture_id);
-                        prim_part_list.color_texture_id = corner_image.texture_id;
-
-                        let metrics = BoxShadowMetrics::new(&prim.rect,
-                                                            details.border_radius,
-                                                            details.blur_radius);
-
-                        // Draw the corners.
-                        self.add_box_shadow_corners(&metrics,
-                                                    &details.box_bounds,
-                                                    &details.color,
-                                                    &corner_image.uv_rect(),
-                                                    corner_image.is_opaque,
-                                                    &mut parts);
-
-                        // Draw the sides.
-                        self.add_box_shadow_sides(&metrics,
-                                                  &details.color,
-                                                  &edge_image.uv_rect(),
-                                                  edge_image.is_opaque,
-                                                  &mut parts);
-
-                        match details.clip_mode {
-                            BoxShadowClipMode::None => {
-                                // Fill the center area.
-                                //self.add_color_rectangle(box_bounds, color, resource_cache, frame_id);
-                                panic!("todo");
-                            }
-                            BoxShadowClipMode::Outset => {
-                                // Fill the center area.
-                                if metrics.br_inner.x > metrics.tl_inner.x &&
-                                        metrics.br_inner.y > metrics.tl_inner.y {
-                                    let center_rect =
-                                        Rect::new(metrics.tl_inner,
-                                                  Size2D::new(metrics.br_inner.x - metrics.tl_inner.x,
-                                                              metrics.br_inner.y - metrics.tl_inner.y));
-
-                                    // FIXME(pcwalton): This assumes the border radius is zero. That is not always
-                                    // the case!
-                                    //let old_clip_out_rect = self.set_clip_out_rect(Some(*box_bounds));
-
-                                    parts.push(PrimitivePart::solid(metrics.tl_inner,
-                                                                    Size2D::new(metrics.br_inner.x - metrics.tl_inner.x,
-                                                                                metrics.br_inner.y - metrics.tl_inner.y),
-                                                                    details.color,
-                                                                    None,
-                                                                    CornerKind::TopLeft));
-
-                                    //self.set_clip_out_rect(old_clip_out_rect);
-                                }
-                            }
-                            BoxShadowClipMode::Inset => {
-                                // Fill in the outsides.
-                                panic!("todo");
-/*                                self.fill_outside_area_of_inset_box_shadow(box_bounds,
-                                                                           box_offset,
-                                                                           color,
-                                                                           blur_radius,
-                                                                           spread_radius,
-                                                                           border_radius,
-                                                                           resource_cache,
-                                                                           frame_id);*/
-                            }
-                        }
-                    }
-
-                    prim_part_list.push_parts(&parts);
-                }
-                PrimitiveDetails::Gradient(ref details) => {
-                    let mut parts = Vec::new();
-
-                    let stops = auxiliary_lists.gradient_stops(&details.stops_range);
-                    for i in 0..(stops.len() - 1) {
-                        let (prev_stop, next_stop) = (&stops[i], &stops[i + 1]);
-                        let piece_origin;
-                        let piece_size;
-                        let rect_kind;
-                        match details.dir {
-                            AxisDirection::Horizontal => {
-                                let prev_x = util::lerp(prim.rect.origin.x, prim.rect.max_x(), prev_stop.offset);
-                                let next_x = util::lerp(prim.rect.origin.x, prim.rect.max_x(), next_stop.offset);
-                                piece_origin = Point2D::new(prev_x, prim.rect.origin.y);
-                                piece_size = Size2D::new(next_x - prev_x, prim.rect.size.height);
-                                rect_kind = RectangleKind::HorizontalGradient;
-                            }
-                            AxisDirection::Vertical => {
-                                let prev_y = util::lerp(prim.rect.origin.y, prim.rect.max_y(), prev_stop.offset);
-                                let next_y = util::lerp(prim.rect.origin.y, prim.rect.max_y(), next_stop.offset);
-                                piece_origin = Point2D::new(prim.rect.origin.x, prev_y);
-                                piece_size = Size2D::new(prim.rect.size.width, next_y - prev_y);
-                                rect_kind = RectangleKind::VerticalGradient;
-                            }
-                        }
-
-                        parts.push(PrimitivePart::gradient(piece_origin,
-                                                           piece_size,
-                                                           prev_stop.color,
-                                                           next_stop.color,
-                                                           rect_kind));
-                    }
-
-                    prim_part_list.push_parts(&parts);
-                }
-                PrimitiveDetails::Text(ref details) => {
-                    let run = text_buffer.get_text(details.run_key);
-
-                    // TODO(gw): Need a general solution to handle multiple texture pages per tile in WR2!
-                    assert!(prim_part_list.color_texture_id == TextureId(0) ||
-                            prim_part_list.color_texture_id == run.texture_id);
-                    prim_part_list.color_texture_id = run.texture_id;
-
-                    let part = PrimitivePart::text(run.rect.origin,
-                                                   run.rect.size,
-                                                   run.st0,
-                                                   run.st1,
-                                                   details.color);
-                    prim_part_list.push_part(part);
-                }
-            }
-        }
-
-        prim_part_list
-    }
 }
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ClipKind {
     ClipOut,
-    //ClipIn,
+    ClipIn,
 }
 
 #[derive(Clone, Debug)]
@@ -1596,7 +1298,6 @@ pub struct ClipCorner {
     inner_radius_y: f32,
 }
 
-/*
 impl ClipCorner {
     fn invalid() -> ClipCorner {
         ClipCorner {
@@ -1608,7 +1309,6 @@ impl ClipCorner {
         }
     }
 }
-*/
 
 #[derive(Debug, Clone)]
 pub struct Clip {
@@ -1673,7 +1373,6 @@ impl Clip {
         }
     }
 
-/*
     pub fn from_rect(rect: &Rect<f32>, clip_kind: ClipKind) -> Clip {
         Clip {
             p0: rect.origin,
@@ -1685,7 +1384,7 @@ impl Clip {
             bottom_left: ClipCorner::invalid(),
             bottom_right: ClipCorner::invalid(),
         }
-    }*/
+    }
 
     pub fn from_border_radius(rect: &Rect<f32>,
                               outer_radius: &BorderRadius,
@@ -1784,7 +1483,7 @@ impl FrameBuilderConfig {
 pub struct Frame {
     pub viewport_size: Size2D<u32>,
     pub layer_ubo: Ubo<LayerTemplateIndex, PackedLayer>, // TODO(gw): Handle batching this, in crazy case where layer count > ubo size!
-    pub clips: Vec<Clip>, // TODO(gw): Handle batching this, in crazy case where layer count > ubo size!
+    //pub clips: Vec<Clip>, // TODO(gw): Handle batching this, in crazy case where layer count > ubo size!
     pub tiles: Vec<Tile>,
     pub text_buffer: TextBuffer,
     pub color_texture_id: TextureId,
@@ -2058,6 +1757,345 @@ impl FrameBuilder {
         self.add_primitive(&rect, PrimitiveDetails::Image(prim));
     }
 
+    fn build_prim_parts(&mut self,
+                        layer_index: usize,
+                        node_index: usize,
+                        text_buffer: &TextBuffer,
+                        auxiliary_lists: &AuxiliaryLists,
+                        resource_cache: &ResourceCache,
+                        frame_id: FrameId) -> PrimitivePartList {
+        let layer = &self.layers[layer_index];
+        let node = &layer.quadtree.nodes[node_index];
+        let primitives = &layer.primitives;
+        let prim_index_buffer = &node.items;
+
+        let mut color_texture_id = TextureId(0);
+        let mut prim_part_list = PrimitivePartList::new();
+
+        for prim_index in prim_index_buffer {
+            let PrimitiveIndex(pi) = *prim_index;
+            let prim = &primitives[pi as usize];
+
+            let clip = prim.clip.map(|ci| {
+                let ClipIndex(ci) = ci;
+                &self.clips[ci as usize]
+            });
+
+            match prim.details {
+                PrimitiveDetails::Rectangle(ref details) => {
+                    let part = PrimitivePart::solid(prim.rect.origin,
+                                                    prim.rect.size,
+                                                    details.color,
+                                                    None);
+
+                    prim_part_list.push_part(&part, clip);
+                }
+                PrimitiveDetails::Image(ref details) => {
+                    let image_info = resource_cache.get_image(details.image_key,
+                                                              details.image_rendering,
+                                                              frame_id);
+                    let uv_rect = image_info.uv_rect();
+
+                    assert!(color_texture_id == TextureId(0) ||
+                            color_texture_id == image_info.texture_id);
+                    color_texture_id = image_info.texture_id;
+
+                    let part = PrimitivePart::image(prim.rect.origin,
+                                                    prim.rect.size,
+                                                    uv_rect.top_left,
+                                                    uv_rect.bottom_right,
+                                                    Opacity::from_bool(image_info.is_opaque));
+                    prim_part_list.push_part(&part, clip);
+                }
+                PrimitiveDetails::Border(ref d) => {
+                    let inner_radius = BorderRadius {
+                        top_left: Size2D::new(d.radius.top_left.width - d.left_width,
+                                              d.radius.top_left.width - d.left_width),
+                        top_right: Size2D::new(d.radius.top_right.width - d.right_width,
+                                               d.radius.top_right.width - d.right_width),
+                        bottom_left: Size2D::new(d.radius.bottom_left.width - d.left_width,
+                                                 d.radius.bottom_left.width - d.left_width),
+                        bottom_right: Size2D::new(d.radius.bottom_right.width - d.right_width,
+                                                  d.radius.bottom_right.width - d.right_width),
+                    };
+
+                    let clip = Clip::from_border_radius(&prim.rect,
+                                                        &d.radius,
+                                                        &inner_radius,
+                                                        ClipKind::ClipOut);
+
+                    let ci_tl = if d.radius.top_left != Size2D::zero() {
+                        Some(ClipInfo::new(clip.top_left.rect.bottom_right(),
+                                           Point2D::zero(),
+                                           Point2D::new(clip.top_left.outer_radius_x, clip.top_left.outer_radius_y),
+                                           Point2D::new(clip.top_left.inner_radius_x, clip.top_left.inner_radius_y)))
+                    } else {
+                        None
+                    };
+
+
+                    let ci_tr = if d.radius.top_right != Size2D::zero() {
+                        Some(ClipInfo::new(clip.top_right.rect.bottom_left(),
+                                           Point2D::zero(),
+                                           Point2D::new(clip.top_right.outer_radius_x, clip.top_right.outer_radius_y),
+                                           Point2D::new(clip.top_right.inner_radius_x, clip.top_right.inner_radius_y)))
+                    } else {
+                        None
+                    };
+
+                    let ci_bl = if d.radius.bottom_left != Size2D::zero() {
+                        Some(ClipInfo::new(clip.bottom_left.rect.top_right(),
+                                           Point2D::zero(),
+                                           Point2D::new(clip.bottom_left.outer_radius_x, clip.bottom_left.outer_radius_y),
+                                           Point2D::new(clip.bottom_left.inner_radius_x, clip.bottom_left.inner_radius_y)))
+                    } else {
+                        None
+                    };
+
+                    let ci_br = if d.radius.bottom_right != Size2D::zero() {
+                        Some(ClipInfo::new(clip.bottom_right.rect.origin,
+                                           Point2D::zero(),
+                                           Point2D::new(clip.bottom_right.outer_radius_x, clip.bottom_right.outer_radius_y),
+                                           Point2D::new(clip.bottom_right.inner_radius_x, clip.bottom_right.inner_radius_y)))
+                    } else {
+                        None
+                    };
+
+                    let parts = [
+                        PrimitivePart::solid(Point2D::new(d.tl_outer.x, d.tl_inner.y),
+                                             Size2D::new(d.left_width, d.bl_inner.y - d.tl_inner.y),
+                                             d.left_color,
+                                             None),
+                        PrimitivePart::solid(Point2D::new(d.tl_inner.x, d.tl_outer.y),
+                                             Size2D::new(d.tr_inner.x - d.tl_inner.x, d.tr_outer.y + d.top_width - d.tl_outer.y),
+                                             d.top_color,
+                                             None),
+                        PrimitivePart::solid(Point2D::new(d.br_outer.x - d.right_width, d.tr_inner.y),
+                                             Size2D::new(d.right_width, d.br_inner.y - d.tr_inner.y),
+                                             d.right_color,
+                                             None),
+                        PrimitivePart::solid(Point2D::new(d.bl_inner.x, d.bl_outer.y - d.bottom_width),
+                                             Size2D::new(d.br_inner.x - d.bl_inner.x, d.br_outer.y - d.bl_outer.y + d.bottom_width),
+                                             d.bottom_color,
+                                             None),
+                        PrimitivePart::bc(d.tl_outer,
+                                          Size2D::new(d.tl_inner.x - d.tl_outer.x, d.tl_inner.y - d.tl_outer.y),
+                                          d.left_color,
+                                          d.top_color,
+                                          RotationKind::Angle0,
+                                          ci_tl),
+                        PrimitivePart::bc(Point2D::new(d.tr_inner.x, d.tr_outer.y),
+                                          Size2D::new(d.tr_outer.x - d.tr_inner.x, d.tr_inner.y - d.tr_outer.y),
+                                          d.top_color,
+                                          d.right_color,
+                                          RotationKind::Angle90,
+                                          ci_tr),
+                        PrimitivePart::bc(d.br_inner,
+                                          Size2D::new(d.br_outer.x - d.br_inner.x, d.br_outer.y - d.br_inner.y),
+                                          d.right_color,
+                                          d.bottom_color,
+                                          RotationKind::Angle180,
+                                          ci_br),
+                        PrimitivePart::bc(Point2D::new(d.bl_outer.x, d.bl_inner.y),
+                                          Size2D::new(d.bl_inner.x - d.bl_outer.x, d.bl_outer.y - d.bl_inner.y),
+                                          d.bottom_color,
+                                          d.left_color,
+                                          RotationKind::Angle270,
+                                          ci_bl),
+                    ];
+
+                    prim_part_list.push_parts(&parts, None);
+                }
+                PrimitiveDetails::BoxShadow(ref details) => {
+                    let mut parts = Vec::new();
+
+                    // Fast path.
+                    if details.blur_radius == 0.0 &&
+                       details.spread_radius == 0.0 &&
+                       details.clip_mode == BoxShadowClipMode::None {
+                        parts.push(PrimitivePart::solid(prim.rect.origin,
+                                                        prim.rect.size,
+                                                        details.color,
+                                                        None));
+                    } else {
+                        let inverted = match details.clip_mode {
+                            BoxShadowClipMode::Outset | BoxShadowClipMode::None => false,
+                            BoxShadowClipMode::Inset => true,
+                        };
+
+                        let edge_image = match BoxShadowRasterOp::create_edge(details.blur_radius,
+                                                                              details.border_radius,
+                                                                              &prim.rect,
+                                                                              inverted,
+                                                                              self.device_pixel_ratio) {
+                            Some(raster_item) => {
+                                let raster_item = RasterItem::BoxShadow(raster_item);
+                                resource_cache.get_raster(&raster_item, frame_id)
+                            }
+                            None => resource_cache.get_dummy_color_image(),
+                        };
+
+                        // TODO(gw): A hack for texture ids here - need a better solution!
+                        assert!(color_texture_id == TextureId(0) ||
+                                color_texture_id == edge_image.texture_id);
+                        color_texture_id = edge_image.texture_id;
+
+                        let corner_image = match BoxShadowRasterOp::create_corner(details.blur_radius,
+                                                                                  details.border_radius,
+                                                                                  &prim.rect,
+                                                                                  inverted,
+                                                                                  self.device_pixel_ratio) {
+                            Some(raster_item) => {
+                                let raster_item = RasterItem::BoxShadow(raster_item);
+                                resource_cache.get_raster(&raster_item, frame_id)
+                            }
+                            None => resource_cache.get_dummy_color_image(),
+                        };
+
+                        // TODO(gw): A hack for texture ids here - need a better solution!
+                        assert!(color_texture_id == TextureId(0) ||
+                                color_texture_id == corner_image.texture_id);
+                        color_texture_id = corner_image.texture_id;
+
+                        let metrics = BoxShadowMetrics::new(&prim.rect,
+                                                            details.border_radius,
+                                                            details.blur_radius);
+
+                        // Draw the corners.
+                        add_box_shadow_corners(&metrics,
+                                               &details.box_bounds,
+                                               &details.color,
+                                               &corner_image.uv_rect(),
+                                               corner_image.is_opaque,
+                                               &mut parts);
+
+                        // Draw the sides.
+                        add_box_shadow_sides(&metrics,
+                                             &details.color,
+                                             &edge_image.uv_rect(),
+                                             edge_image.is_opaque,
+                                             &mut parts);
+
+                        match details.clip_mode {
+                            BoxShadowClipMode::None => {
+                                // Fill the center area.
+                                //self.add_color_rectangle(box_bounds, color, resource_cache, frame_id);
+                                panic!("todo");
+                            }
+                            BoxShadowClipMode::Outset => {
+                                // Fill the center area.
+                                if metrics.br_inner.x > metrics.tl_inner.x &&
+                                        metrics.br_inner.y > metrics.tl_inner.y {
+                                    let center_rect =
+                                        Rect::new(metrics.tl_inner,
+                                                  Size2D::new(metrics.br_inner.x - metrics.tl_inner.x,
+                                                              metrics.br_inner.y - metrics.tl_inner.y));
+
+                                    // FIXME(pcwalton): This assumes the border radius is zero. That is not always
+                                    // the case!
+                                    let clip_in = Clip::from_rect(&details.box_bounds, ClipKind::ClipIn);
+
+                                    let part = PrimitivePart::solid(metrics.tl_inner,
+                                                                    Size2D::new(metrics.br_inner.x - metrics.tl_inner.x,
+                                                                                metrics.br_inner.y - metrics.tl_inner.y),
+                                                                    details.color,
+                                                                    None);
+
+                                    prim_part_list.push_part(&part, Some(&clip_in));
+                                }
+                            }
+                            BoxShadowClipMode::Inset => {
+                                // Fill in the outsides.
+                                panic!("todo");
+/*                                self.fill_outside_area_of_inset_box_shadow(box_bounds,
+                                                                           box_offset,
+                                                                           color,
+                                                                           blur_radius,
+                                                                           spread_radius,
+                                                                           border_radius,
+                                                                           resource_cache,
+                                                                           frame_id);*/
+                            }
+                        }
+                    }
+
+                    match details.clip_mode {
+                        BoxShadowClipMode::None => {
+                            prim_part_list.push_parts(&parts, None);
+                        }
+                        BoxShadowClipMode::Inset => {
+                            let clip = Clip::from_rect(&details.box_bounds, ClipKind::ClipOut);
+                            prim_part_list.push_parts(&parts, Some(&clip));
+                        }
+                        BoxShadowClipMode::Outset => {
+                            let clip = Clip::from_rect(&details.box_bounds, ClipKind::ClipIn);
+                            prim_part_list.push_parts(&parts, Some(&clip));
+                        }
+                    };
+
+                }
+                PrimitiveDetails::Gradient(ref details) => {
+                    let mut parts = Vec::new();
+
+                    let stops = auxiliary_lists.gradient_stops(&details.stops_range);
+                    for i in 0..(stops.len() - 1) {
+                        let (prev_stop, next_stop) = (&stops[i], &stops[i + 1]);
+                        let piece_origin;
+                        let piece_size;
+                        let rect_kind;
+                        match details.dir {
+                            AxisDirection::Horizontal => {
+                                let prev_x = util::lerp(prim.rect.origin.x, prim.rect.max_x(), prev_stop.offset);
+                                let next_x = util::lerp(prim.rect.origin.x, prim.rect.max_x(), next_stop.offset);
+                                piece_origin = Point2D::new(prev_x, prim.rect.origin.y);
+                                piece_size = Size2D::new(next_x - prev_x, prim.rect.size.height);
+                                rect_kind = RectangleKind::HorizontalGradient;
+                            }
+                            AxisDirection::Vertical => {
+                                let prev_y = util::lerp(prim.rect.origin.y, prim.rect.max_y(), prev_stop.offset);
+                                let next_y = util::lerp(prim.rect.origin.y, prim.rect.max_y(), next_stop.offset);
+                                piece_origin = Point2D::new(prim.rect.origin.x, prev_y);
+                                piece_size = Size2D::new(prim.rect.size.width, next_y - prev_y);
+                                rect_kind = RectangleKind::VerticalGradient;
+                            }
+                        }
+
+                        parts.push(PrimitivePart::gradient(piece_origin,
+                                                           piece_size,
+                                                           prev_stop.color,
+                                                           next_stop.color,
+                                                           rect_kind));
+                    }
+
+                    prim_part_list.push_parts(&parts, clip);
+                }
+                PrimitiveDetails::Text(ref details) => {
+                    let run = text_buffer.get_text(details.run_key);
+
+                    // TODO(gw): Need a general solution to handle multiple texture pages per tile in WR2!
+                    assert!(color_texture_id == TextureId(0) ||
+                            color_texture_id == run.texture_id);
+                    color_texture_id = run.texture_id;
+
+                    let part = PrimitivePart::text(run.rect.origin,
+                                                   run.rect.size,
+                                                   run.st0,
+                                                   run.st1,
+                                                   details.color);
+                    prim_part_list.push_part(&part, clip);
+                }
+            }
+        }
+
+        if color_texture_id != TextureId(0) {
+            assert!(self.color_texture_id == TextureId(0) ||
+                    self.color_texture_id == color_texture_id);
+            self.color_texture_id = color_texture_id;
+        }
+
+        prim_part_list
+    }
+
     pub fn build(&mut self,
                  resource_cache: &mut ResourceCache,
                  frame_id: FrameId,
@@ -2135,62 +2173,50 @@ impl FrameBuilder {
 
             // TODO(gw): To multi-thread resource list building - remove text buffer
             //           from here, and iterate the created resource lists sequentially as a post step...
-            let layer = &self.layers[tile.layer_index];
-            let node = &layer.quadtree.nodes[tile.node_index];
 
-            debug_rects.push((node.items.len(), layer.packed.transform.transform_rect(&node.rect)));
             // Now that glyphs are rasterized, it's safe to build the text runs.
 
             // Convert the primitives in this node into a list of packed prim parts.
             // TODO(gw): This can be trivially run on worker threads!
-            let part_list = layer.build_prim_parts(&node.items,
-                                                   &text_buffer,
-                                                   auxiliary_lists,
-                                                   resource_cache,
-                                                   frame_id,
-                                                   &mut self.clips);
+            let part_list = self.build_prim_parts(tile.layer_index,
+                                                  tile.node_index,
+                                                  &text_buffer,
+                                                  auxiliary_lists,
+                                                  resource_cache,
+                                                  frame_id);
 
-            if part_list.color_texture_id != TextureId(0) {
-                debug_assert!(self.color_texture_id == TextureId(0) ||
-                              self.color_texture_id == part_list.color_texture_id,
-                              format!("self={:?} part_list={:?}", self.color_texture_id,
-                                                                  part_list.color_texture_id));
-                self.color_texture_id = part_list.color_texture_id;
-            }
+            let layer = &self.layers[tile.layer_index];
+            let node = &layer.quadtree.nodes[tile.node_index];
+
+            debug_rects.push((node.items.len(), layer.packed.transform.transform_rect(&node.rect)));
 
             let part_offset = compiled_tile.parts.len();
 
-            sap(&node.rect,
-                &part_list.parts,
-                |rect, ref part_indices| {
-
-                let mut indices = Vec::new();
-                for index in part_indices.iter() {
-                    indices.push(*index);
-                }
-                indices.sort_by(|a, b| {
+            let mut sap = Sap::new();
+            sap.doit(&node.rect, &part_list.parts, |rect, mut part_indices| {
+                part_indices.sort_by(|a, b| {
                     b.cmp(&a)
                 });
 
-                let opaque_index = indices.iter().position(|pi| {
+                let opaque_index = part_indices.iter().position(|pi| {
                     let part = &part_list.parts[*pi];
                     part.opacity == Opacity::Opaque
                 });
 
                 if let Some(opaque_index) = opaque_index {
-                    indices.truncate(opaque_index+1);
+                    part_indices.truncate(opaque_index+1);
                 }
 
                 //debug_rects.push((indices.len(), layer.packed.transform.transform_rect(&rect)));
 
                 let mut draw_cmd = PackedDrawCommand::new(rect, layer.index_in_ubo);
 
-                let shader = if indices.len() <= MAX_PRIMITIVES_PER_PASS {
-                    for (cmd_index, part_index) in indices.iter().enumerate() {
+                let shader = if part_indices.len() <= MAX_PRIMITIVES_PER_PASS {
+                    for (cmd_index, part_index) in part_indices.iter().enumerate() {
                         draw_cmd.set_primitive(cmd_index, part_offset + *part_index);
                     }
 
-                    match indices.len() {
+                    match part_indices.len() {
                         0 => panic!("wtf"),
                         1 => PrimitiveShader::Prim1,
                         2 => PrimitiveShader::Prim2,
@@ -2222,7 +2248,7 @@ impl FrameBuilder {
             viewport_size: Size2D::new(self.screen_rect.size.width as u32,
                                        self.screen_rect.size.height as u32),
             layer_ubo: layer_ubo,
-            clips: mem::replace(&mut self.clips, Vec::new()),
+            //clips: mem::replace(&mut self.clips, Vec::new()),
             tiles: tiles,
             text_buffer: text_buffer,
             debug_rects: debug_rects,
@@ -2240,4 +2266,190 @@ fn compute_box_shadow_rect(box_bounds: &Rect<f32>,
     rect.origin.x += box_offset.x;
     rect.origin.y += box_offset.y;
     rect.inflate(spread_radius, spread_radius)
+}
+
+// FIXME(pcwalton): Assumes rectangles are well-formed with origin in TL
+fn add_box_shadow_corner(top_left: &Point2D<f32>,
+                         bottom_right: &Point2D<f32>,
+                         corner_area_top_left: &Point2D<f32>,
+                         corner_area_bottom_right: &Point2D<f32>,
+                         color: &ColorF,
+                         rotation_angle: RotationKind,
+                         uv_rect: &RectUv<f32>,
+                         is_opaque: bool,
+                         part_list: &mut Vec<PrimitivePart>) {
+    let rect = Rect::new(*top_left, Size2D::new(bottom_right.x - top_left.x,
+                                                bottom_right.y - top_left.y));
+
+    let mut part = PrimitivePart::box_shadow_texture(rect,
+                                                     *color,
+                                                     uv_rect.top_left,
+                                                     uv_rect.bottom_right,
+                                                     is_opaque,
+                                                     rotation_angle,
+                                                     RectangleKind::Solid);
+
+    let corner_area_rect =
+        Rect::new(*corner_area_top_left,
+                  Size2D::new(corner_area_bottom_right.x - corner_area_top_left.x,
+                              corner_area_bottom_right.y - corner_area_top_left.y));
+    let clip = Clip::from_rect(&corner_area_rect, ClipKind::ClipOut);
+
+    // TODO(gw): This can only ever return 1 or none - make a fast path without heap allocs!
+    let parts = part.clip(&clip);
+    for part in parts {
+        part_list.push(part);
+    }
+}
+
+fn add_box_shadow_edge(top_left: &Point2D<f32>,
+                       bottom_right: &Point2D<f32>,
+                       color: &ColorF,
+                       rotation_angle: RotationKind,
+                       uv_rect: &RectUv<f32>,
+                       is_opaque: bool,
+                       part_list: &mut Vec<PrimitivePart>) {
+    if top_left.x >= bottom_right.x || top_left.y >= bottom_right.y {
+        return
+    }
+
+    let rect = Rect::new(*top_left, Size2D::new(bottom_right.x - top_left.x,
+                                                bottom_right.y - top_left.y));
+
+    part_list.push(PrimitivePart::box_shadow_texture(rect,
+                                                     *color,
+                                                     uv_rect.top_left,
+                                                     uv_rect.bottom_right,
+                                                     is_opaque,
+                                                     rotation_angle,
+                                                     RectangleKind::BoxShadowEdge));
+}
+
+fn add_box_shadow_sides(metrics: &BoxShadowMetrics,
+                        color: &ColorF,
+                        uv_rect: &RectUv<f32>,
+                        is_opaque: bool,
+                        part_list: &mut Vec<PrimitivePart>) {
+    // Draw the sides.
+    //
+    //      +--+------------------+--+
+    //      |  |##################|  |
+    //      +--+------------------+--+
+    //      |##|                  |##|
+    //      |##|                  |##|
+    //      |##|                  |##|
+    //      +--+------------------+--+
+    //      |  |##################|  |
+    //      +--+------------------+--+
+
+    let horizontal_size = Size2D::new(metrics.br_inner.x - metrics.tl_inner.x,
+                                      metrics.edge_size);
+    let vertical_size = Size2D::new(metrics.edge_size,
+                                    metrics.br_inner.y - metrics.tl_inner.y);
+    let top_rect = Rect::new(metrics.tl_outer + Point2D::new(metrics.edge_size, 0.0),
+                             horizontal_size);
+    let right_rect =
+        Rect::new(metrics.tr_outer + Point2D::new(-metrics.edge_size, metrics.edge_size),
+                  vertical_size);
+    let bottom_rect =
+        Rect::new(metrics.bl_outer + Point2D::new(metrics.edge_size, -metrics.edge_size),
+                  horizontal_size);
+    let left_rect = Rect::new(metrics.tl_outer + Point2D::new(0.0, metrics.edge_size),
+                              vertical_size);
+
+    add_box_shadow_edge(&top_rect.origin,
+                        &top_rect.bottom_right(),
+                        color,
+                        RotationKind::Angle90,
+                        uv_rect,
+                        is_opaque,
+                        part_list);
+    add_box_shadow_edge(&right_rect.origin,
+                        &right_rect.bottom_right(),
+                        color,
+                        RotationKind::Angle180,
+                        uv_rect,
+                        is_opaque,
+                        part_list);
+    add_box_shadow_edge(&bottom_rect.origin,
+                        &bottom_rect.bottom_right(),
+                        color,
+                        RotationKind::Angle270,
+                        uv_rect,
+                        is_opaque,
+                        part_list);
+    add_box_shadow_edge(&left_rect.origin,
+                        &left_rect.bottom_right(),
+                        color,
+                        RotationKind::Angle0,
+                        uv_rect,
+                        is_opaque,
+                        part_list);
+}
+
+fn add_box_shadow_corners(metrics: &BoxShadowMetrics,
+                          box_bounds: &Rect<f32>,
+                          color: &ColorF,
+                          uv_rect: &RectUv<f32>,
+                          is_opaque: bool,
+                          part_list: &mut Vec<PrimitivePart>) {
+    // Draw the corners.
+    //
+    //      +--+------------------+--+
+    //      |##|                  |##|
+    //      +--+------------------+--+
+    //      |  |                  |  |
+    //      |  |                  |  |
+    //      |  |                  |  |
+    //      +--+------------------+--+
+    //      |##|                  |##|
+    //      +--+------------------+--+
+
+    // Prevent overlap of the box shadow corners when the size of the blur is larger than the
+    // size of the box.
+    let center = Point2D::new(box_bounds.origin.x + box_bounds.size.width / 2.0,
+                              box_bounds.origin.y + box_bounds.size.height / 2.0);
+
+    add_box_shadow_corner(&metrics.tl_outer,
+                          &Point2D::new(metrics.tl_outer.x + metrics.edge_size,
+                                        metrics.tl_outer.y + metrics.edge_size),
+                          &metrics.tl_outer,
+                          &center,
+                          &color,
+                          RotationKind::Angle0,
+                          uv_rect,
+                          is_opaque,
+                          part_list);
+    add_box_shadow_corner(&Point2D::new(metrics.tr_outer.x - metrics.edge_size,
+                                        metrics.tr_outer.y),
+                          &Point2D::new(metrics.tr_outer.x,
+                                        metrics.tr_outer.y + metrics.edge_size),
+                          &Point2D::new(center.x, metrics.tr_outer.y),
+                          &Point2D::new(metrics.tr_outer.x, center.y),
+                          &color,
+                          RotationKind::Angle90,
+                          uv_rect,
+                          is_opaque,
+                          part_list);
+    add_box_shadow_corner(&Point2D::new(metrics.br_outer.x - metrics.edge_size,
+                                         metrics.br_outer.y - metrics.edge_size),
+                          &Point2D::new(metrics.br_outer.x, metrics.br_outer.y),
+                          &center,
+                          &metrics.br_outer,
+                          &color,
+                          RotationKind::Angle180,
+                          uv_rect,
+                          is_opaque,
+                          part_list);
+    add_box_shadow_corner(&Point2D::new(metrics.bl_outer.x,
+                                        metrics.bl_outer.y - metrics.edge_size),
+                          &Point2D::new(metrics.bl_outer.x + metrics.edge_size,
+                                        metrics.bl_outer.y),
+                          &Point2D::new(metrics.bl_outer.x, center.y),
+                          &Point2D::new(center.x, metrics.bl_outer.y),
+                          &color,
+                          RotationKind::Angle270,
+                          uv_rect,
+                          is_opaque,
+                          part_list);
 }

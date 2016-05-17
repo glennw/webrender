@@ -40,7 +40,7 @@ pub const MAX_RASTER_OP_SIZE: u32 = 2048;
 const UBO_BIND_COMMANDS: u32 = 0;
 const UBO_BIND_PRIMITIVES: u32 = 1;
 const UBO_BIND_LAYERS: u32 = 2;
-const UBO_BIND_CLIPS: u32 = 3;
+//const UBO_BIND_CLIPS: u32 = 3;
 
 #[derive(Clone, Copy)]
 struct VertexBuffer {
@@ -101,10 +101,10 @@ fn create_prim_shader(name: &'static str, device: &mut Device) -> ProgramId {
     let prim_index = gl::get_uniform_block_index(program_id.0, "Primitives");
     gl::uniform_block_binding(program_id.0, prim_index, UBO_BIND_PRIMITIVES);
 
-    let clip_index = gl::get_uniform_block_index(program_id.0, "Clips");
-    gl::uniform_block_binding(program_id.0, clip_index, UBO_BIND_CLIPS);
+    //let clip_index = gl::get_uniform_block_index(program_id.0, "Clips");
+    //gl::uniform_block_binding(program_id.0, clip_index, UBO_BIND_CLIPS);
 
-    println!("PrimitiveShader {}: cmds={} layers={} prims={} clips={}", name, cmds_index, layer_index, prim_index, clip_index);
+    println!("PrimitiveShader {}: cmds={} layers={} prims={}", name, cmds_index, layer_index, prim_index);
 
     program_id
 }
@@ -1151,11 +1151,11 @@ impl Renderer {
         gl::buffer_data(gl::UNIFORM_BUFFER, &frame.layer_ubo.items, gl::STATIC_DRAW);
         gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_LAYERS, layer_ubo);
 
-        let clip_ubos = gl::gen_buffers(1);
-        let clip_ubo = clip_ubos[0];
-        gl::bind_buffer(gl::UNIFORM_BUFFER, clip_ubo);
-        gl::buffer_data(gl::UNIFORM_BUFFER, &frame.clips, gl::STATIC_DRAW);
-        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CLIPS, clip_ubo);
+        //let clip_ubos = gl::gen_buffers(1);
+        //let clip_ubo = clip_ubos[0];
+        //gl::bind_buffer(gl::UNIFORM_BUFFER, clip_ubo);
+        //gl::buffer_data(gl::UNIFORM_BUFFER, &frame.clips, gl::STATIC_DRAW);
+        //gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CLIPS, clip_ubo);
 
         for tile in &frame.tiles {
             let tile = tile.result.as_ref().unwrap();
@@ -1192,7 +1192,7 @@ impl Renderer {
             gl::delete_buffers(&prim_ubos);
         }
         gl::delete_buffers(&layer_ubos);
-        gl::delete_buffers(&clip_ubos);
+        //gl::delete_buffers(&clip_ubos);
         //gl::disable(gl::STENCIL_TEST);
         gl::disable(gl::BLEND);
 

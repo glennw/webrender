@@ -1172,6 +1172,15 @@ pub struct PackedGlyph {
 }
 
 #[derive(Debug, Clone)]
+pub struct TextRect {
+    pub glyph_index: usize,
+    pub glyph_count: usize,
+    pub st0: Point2D<f32>,
+    pub st1: Point2D<f32>,
+    pub rect: Rect<f32>,
+}
+
+#[derive(Debug, Clone)]
 pub struct TextRun {
     glyphs: ItemRange,
     key: FontKey,
@@ -1179,9 +1188,7 @@ pub struct TextRun {
     blur_radius: Au,
 
     texture_id: TextureId,
-    pub st0: Point2D<f32>,
-    pub st1: Point2D<f32>,
-    pub rect: Rect<f32>,
+    text_rects: Vec<TextRect>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -1215,9 +1222,7 @@ impl TextBuffer {
             key: font_key,
             size: size,
             blur_radius: blur_radius,
-            st0: Point2D::zero(),
-            st1: Point2D::zero(),
-            rect: Rect::new(Point2D::zero(), Size2D::zero()),
+            text_rects: Vec::new(),
             texture_id: TextureId(0),
         });
     }
@@ -1265,32 +1270,65 @@ impl TextBuffer {
                     }
                 }
 
+
                 if !glyphs.is_empty() {
-                    let mut rect = Rect::zero();
-                    for glyph in &glyphs {
-                        rect = rect.union(&Rect::new(glyph.p0, Size2D::new(glyph.p1.x - glyph.p0.x, glyph.p1.y - glyph.p0.y)));
+                    let mut current_rect = Rect::zero();
+                    let mut first_glyph_index = 0;
+                    let mut glyph_count = 0;
+
+                    for i in 0..glyphs.len() {
+                        let glyph = &glyphs[i];
+                        let glyph_rect = Rect::new(glyph.p0, Size2D::new(glyph.p1.x - glyph.p0.x, glyph.p1.y - glyph.p0.y));
+                        let new_rect = current_rect.union(&glyph_rect);
+                        if glyph_count > 0 && (new_rect.size.width > 256.0 || new_rect.size.height > 256.0) {
+                            // flush range
+                            run.text_rects.push(TextRect {
+                                glyph_index: first_glyph_index,
+                                glyph_count: glyph_count,
+                                st0: Point2D::zero(),
+                                st1: Point2D::zero(),
+                                rect: current_rect,
+                            });
+                            current_rect = glyph_rect;
+                            glyph_count = 1;
+                            first_glyph_index = i;
+                        } else {
+                            glyph_count += 1;
+                            current_rect = new_rect;
+                        }
                     }
 
-                    let size = Size2D::new(rect.size.width.ceil() as u32, rect.size.height.ceil() as u32);
+                    debug_assert!(glyph_count > 0);
+                    run.text_rects.push(TextRect {
+                        glyph_index: first_glyph_index,
+                        glyph_count: glyph_count,
+                        st0: Point2D::zero(),
+                        st1: Point2D::zero(),
+                        rect: current_rect,
+                    });
 
-                    let origin = self.page_allocator
-                                     .allocate(&size, TextureFilter::Linear)
-                                     .expect(&format!("handle no texture space - {:?} / {:?}", size, TEXT_TARGET_SIZE));
+                    for text_rect in &mut run.text_rects {
+                        let size = Size2D::new(text_rect.rect.size.width.ceil() as u32,
+                                               text_rect.rect.size.height.ceil() as u32);
 
-                    run.st0 = Point2D::new(origin.x as f32 / self.texture_size,
-                                           origin.y as f32 / self.texture_size);
-                    run.st1 = Point2D::new((origin.x + size.width) as f32 / self.texture_size,
-                                           (origin.y + size.height) as f32 / self.texture_size);
-                    run.rect = rect;
+                        let origin = self.page_allocator
+                                         .allocate(&size, TextureFilter::Linear)
+                                         .expect(&format!("handle no texture space - {:?} / {:?}", size, TEXT_TARGET_SIZE));
 
-                    let d = Point2D::new(origin.x as f32, origin.y as f32) - rect.origin;
-                    for glyph in &glyphs {
-                        self.glyphs.push(PackedGlyph {
-                            st0: glyph.st0,
-                            st1: glyph.st1,
-                            p0: glyph.p0 + d,
-                            p1: glyph.p1 + d,
-                        });
+                        text_rect.st0 = Point2D::new(origin.x as f32 / self.texture_size,
+                                                     origin.y as f32 / self.texture_size);
+                        text_rect.st1 = Point2D::new((origin.x + size.width) as f32 / self.texture_size,
+                                                     (origin.y + size.height) as f32 / self.texture_size);
+
+                        let d = Point2D::new(origin.x as f32, origin.y as f32) - text_rect.rect.origin;
+                        for glyph in &glyphs[text_rect.glyph_index..text_rect.glyph_index + text_rect.glyph_count] {
+                            self.glyphs.push(PackedGlyph {
+                                st0: glyph.st0,
+                                st1: glyph.st1,
+                                p0: glyph.p0 + d,
+                                p1: glyph.p1 + d,
+                            });
+                        }
                     }
                 }
             }
@@ -2127,12 +2165,14 @@ impl FrameBuilder {
                             color_texture_id == run.texture_id);
                     color_texture_id = run.texture_id;
 
-                    let part = PrimitivePart::text(run.rect.origin,
-                                                   run.rect.size,
-                                                   run.st0,
-                                                   run.st1,
-                                                   details.color);
-                    prim_part_list.push_part(&part, clip);
+                    for text_rect in &run.text_rects {
+                        let part = PrimitivePart::text(text_rect.rect.origin,
+                                                       text_rect.rect.size,
+                                                       text_rect.st0,
+                                                       text_rect.st1,
+                                                       details.color);
+                        prim_part_list.push_part(&part, clip);
+                    }
                 }
             }
         }

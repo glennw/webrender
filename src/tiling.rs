@@ -129,7 +129,7 @@ impl Sap {
             if bounding_rect.intersects(&part.rect) {
                 let px0 = part.rect.origin.x.max(bounding_rect.origin.x);
                 let px1 = (part.rect.origin.x + part.rect.size.width).min(bounding_rect.origin.x + bounding_rect.size.width);
-                debug_assert!(px0 != px1);
+                debug_assert!(px0 != px1, format!("pr={:?} br={:?}", part.rect, bounding_rect));
 
                 x_events.push(Event::begin(px0, part_index));
                 x_events.push(Event::end(px1, part_index));
@@ -701,10 +701,23 @@ impl PrimitivePartList {
                  clip: Option<&Clip>) {
         match clip {
             Some(clip) => {
-                self.parts.extend_from_slice(&part.clip(clip));
+                let parts = part.clip(clip);
+                for part in parts {
+                    if part.rect.size.width > 0.0 &&
+                       part.rect.size.height > 0.0 {
+                        self.parts.push(part);
+                    } else {
+                        println!("WARNING: Removed an empty rect {:?} - should be caught higher to avoid redundant work!", part.rect);
+                    }
+                }
             }
             None => {
-                self.parts.push(part.clone());
+                if part.rect.size.width > 0.0 &&
+                   part.rect.size.height > 0.0 {
+                    self.parts.push(part.clone());
+                } else {
+                    println!("WARNING: Removed an empty rect {:?} - should be caught higher to avoid redundant work!", part.rect);
+                }
             }
         }
     }
@@ -1262,7 +1275,7 @@ impl TextBuffer {
 
                     let origin = self.page_allocator
                                      .allocate(&size, TextureFilter::Linear)
-                                     .expect("handle no texture space!");
+                                     .expect(&format!("handle no texture space - {:?} / {:?}", size, TEXT_TARGET_SIZE));
 
                     run.st0 = Point2D::new(origin.x as f32 / self.texture_size,
                                            origin.y as f32 / self.texture_size);
@@ -1979,8 +1992,10 @@ impl FrameBuilder {
                         match details.clip_mode {
                             BoxShadowClipMode::None => {
                                 // Fill the center area.
-                                //self.add_color_rectangle(box_bounds, color, resource_cache, frame_id);
-                                panic!("todo");
+                                parts.push(PrimitivePart::solid(details.box_bounds.origin,
+                                                                details.box_bounds.size,
+                                                                details.color,
+                                                                None));
                             }
                             BoxShadowClipMode::Outset => {
                                 // Fill the center area.
@@ -2006,15 +2021,50 @@ impl FrameBuilder {
                             }
                             BoxShadowClipMode::Inset => {
                                 // Fill in the outsides.
-                                panic!("todo");
-/*                                self.fill_outside_area_of_inset_box_shadow(box_bounds,
-                                                                           box_offset,
-                                                                           color,
-                                                                           blur_radius,
-                                                                           spread_radius,
-                                                                           border_radius,
-                                                                           resource_cache,
-                                                                           frame_id);*/
+
+                                // Fill in the outside area of the box.
+                                //
+                                //            +------------------------------+
+                                //      A --> |##############################|
+                                //            +--+--+------------------+--+--+
+                                //            |##|  |                  |  |##|
+                                //            |##+--+------------------+--+##|
+                                //            |##|  |                  |  |##|
+                                //      D --> |##|  |                  |  |##| <-- B
+                                //            |##|  |                  |  |##|
+                                //            |##+--+------------------+--+##|
+                                //            |##|  |                  |  |##|
+                                //            +--+--+------------------+--+--+
+                                //      C --> |##############################|
+                                //            +------------------------------+
+
+                                // A:
+                                parts.push(PrimitivePart::solid(details.box_bounds.origin,
+                                                                Size2D::new(details.box_bounds.size.width,
+                                                                            metrics.tl_outer.y - details.box_bounds.origin.y),
+                                                                details.color,
+                                                                None));
+
+                                // B:
+                                parts.push(PrimitivePart::solid(metrics.tr_outer,
+                                                                Size2D::new(details.box_bounds.max_x() - metrics.tr_outer.x,
+                                                                            metrics.br_outer.y - metrics.tr_outer.y),
+                                                                details.color,
+                                                                None));
+
+                                // C:
+                                parts.push(PrimitivePart::solid(Point2D::new(details.box_bounds.origin.x, metrics.bl_outer.y),
+                                                                Size2D::new(details.box_bounds.size.width,
+                                                                            details.box_bounds.max_y() - metrics.br_outer.y),
+                                                                details.color,
+                                                                None));
+
+                                // D:
+                                parts.push(PrimitivePart::solid(Point2D::new(details.box_bounds.origin.x, metrics.tl_outer.y),
+                                                                Size2D::new(metrics.tl_outer.x - details.box_bounds.origin.x,
+                                                                            metrics.bl_outer.y - metrics.tl_outer.y),
+                                                                details.color,
+                                                                None));
                             }
                         }
                     }
@@ -2192,7 +2242,7 @@ impl FrameBuilder {
 
             let part_offset = compiled_tile.parts.len();
 
-            let mut sap = Sap::new();
+            let sap = Sap::new();
             sap.doit(&node.rect, &part_list.parts, |rect, mut part_indices| {
                 part_indices.sort_by(|a, b| {
                     b.cmp(&a)

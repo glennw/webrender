@@ -65,15 +65,60 @@ impl MatrixHelpers for Matrix4D<f32> {
     }
 }
 
+pub fn subtract_rect(rect: &Rect<f32>, other: &Rect<f32>) -> Vec<Rect<f32>> {
+    if !rect.intersects(other) {
+        return vec![*rect];
+    }
+    let mut result = Vec::new();
+
+    let this_x0 = rect.origin.x;
+    let this_y0 = rect.origin.y;
+    let this_x1 = rect.origin.x + rect.size.width;
+    let this_y1 = rect.origin.y + rect.size.height;
+
+    let other_x0 = other.origin.x;
+    let other_y0 = other.origin.y;
+    let other_x1 = other.origin.x + other.size.width;
+    let other_y1 = other.origin.y + other.size.height;
+
+    let r = Rect::from_points(this_x0, this_y0, other_x0, this_y1);
+    if r.is_well_formed_and_nonempty() {
+        if let Some(r) = rect.intersection(&r) {
+            result.push(r);
+        }
+    }
+    let r = Rect::from_points(other_x0, this_y0, other_x1, other_y0);
+    if r.is_well_formed_and_nonempty() {
+        if let Some(r) = rect.intersection(&r) {
+            result.push(r);
+        }
+    }
+    let r = Rect::from_points(other_x0, other_y1, other_x1, this_y1);
+    if r.is_well_formed_and_nonempty() {
+        if let Some(r) = rect.intersection(&r) {
+            result.push(r);
+        }
+    }
+    let r = Rect::from_points(other_x1, this_y0, this_x1, this_y1);
+    if r.is_well_formed_and_nonempty() {
+        if let Some(r) = rect.intersection(&r) {
+            result.push(r);
+        }
+    }
+
+    //println!("SUBTRACT {:?} - {:?} = {:?}", rect, other, result);
+
+    result
+}
+
 pub trait RectHelpers {
     fn from_points(x0: f32, y0: f32, x1: f32, y1: f32) -> Rect<f32>;
-    fn contains_rect(&self, other: &Rect<i32>) -> bool;
-    //fn subtract(&self, other: &Rect<i32>) -> Vec<Rect<i32>>;
+    fn contains_rect(&self, other: &Rect<f32>) -> bool;
     fn is_well_formed_and_nonempty(&self) -> bool;
 }
 
-impl RectHelpers for Rect<i32> {
-    fn contains_rect(&self, other: &Rect<i32>) -> bool {
+impl RectHelpers for Rect<f32> {
+    fn contains_rect(&self, other: &Rect<f32>) -> bool {
         self.origin.x <= other.origin.x &&
         self.origin.y <= other.origin.y &&
         self.max_x() >= other.max_x() &&
@@ -86,56 +131,8 @@ impl RectHelpers for Rect<i32> {
     }
 
     fn is_well_formed_and_nonempty(&self) -> bool {
-        self.size.width > 0 && self.size.height > 0
+        self.size.width > 0.0 && self.size.height > 0.0
     }
-
-/*
-    fn subtract(&self, other: &Rect<i32>) -> Vec<Rect<i32>> {
-        if !self.intersects(other) {
-            return vec![*self];
-        }
-        let mut result = Vec::new();
-
-        let this_x0 = self.origin.x;
-        let this_y0 = self.origin.y;
-        let this_x1 = self.origin.x + self.size.width;
-        let this_y1 = self.origin.y + self.size.height;
-
-        let other_x0 = other.origin.x;
-        let other_y0 = other.origin.y;
-        let other_x1 = other.origin.x + other.size.width;
-        let other_y1 = other.origin.y + other.size.height;
-
-        let r = Rect::from_points(this_x0, this_y0, other_x0, this_y1);
-        if r.is_well_formed_and_nonempty() {
-            if let Some(r) = self.intersection(&r) {
-                result.push(r);
-            }
-        }
-        let r = Rect::from_points(other_x0, this_y0, other_x1, other_y0);
-        if r.is_well_formed_and_nonempty() {
-            if let Some(r) = self.intersection(&r) {
-                result.push(r);
-            }
-        }
-        let r = Rect::from_points(other_x0, other_y1, other_x1, this_y1);
-        if r.is_well_formed_and_nonempty() {
-            if let Some(r) = self.intersection(&r) {
-                result.push(r);
-            }
-        }
-        let r = Rect::from_points(other_x1, this_y0, this_x1, this_y1);
-        if r.is_well_formed_and_nonempty() {
-            if let Some(r) = self.intersection(&r) {
-                result.push(r);
-            }
-        }
-
-        //println!("SUBTRACT {:?} - {:?} = {:?}", self, other, result);
-
-        result
-    }
-    */
 }
 
 // Don't use `euclid`'s `is_empty` because that has effectively has an "and" in the conditional

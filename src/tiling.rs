@@ -710,7 +710,7 @@ impl PrimitivePartList {
                        part.rect.size.height > 0.0 {
                         self.parts.push(part);
                     } else {
-                        println!("WARNING: Removed an empty rect {:?} - should be caught higher to avoid redundant work!", part.rect);
+                        //println!("WARNING: Removed an empty rect {:?} - should be caught higher to avoid redundant work!", part.rect);
                     }
                 }
             }
@@ -719,7 +719,7 @@ impl PrimitivePartList {
                    part.rect.size.height > 0.0 {
                     self.parts.push(part.clone());
                 } else {
-                    println!("WARNING: Removed an empty rect {:?} - should be caught higher to avoid redundant work!", part.rect);
+                    //println!("WARNING: Removed an empty rect {:?} - should be caught higher to avoid redundant work!", part.rect);
                 }
             }
         }

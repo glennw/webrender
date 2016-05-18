@@ -751,8 +751,8 @@ impl Frame {
                  _device_pixel_ratio: f32)
                  -> RendererFrame {
         self.update_layer_transforms();
-        resource_cache.expire_old_resources(self.id);
         let frame = self.build_frame(resource_cache);
+        resource_cache.expire_old_resources(self.id);
 
         frame
     }

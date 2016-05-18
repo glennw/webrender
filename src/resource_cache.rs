@@ -355,14 +355,8 @@ impl ResourceCache {
         self.draw_lists.insert(DrawList::new(items, pipeline_id))
     }
 
-/*
     pub fn get_draw_list(&self, draw_list_id: DrawListId) -> &DrawList {
         self.draw_lists.get(draw_list_id)
-    }
-*/
-
-    pub fn get_draw_list_mut(&mut self, draw_list_id: DrawListId) -> &mut DrawList {
-        self.draw_lists.get_mut(draw_list_id)
     }
 
     pub fn remove_draw_list(&mut self, draw_list_id: DrawListId) {
@@ -372,13 +366,6 @@ impl ResourceCache {
     pub fn pending_updates(&mut self) -> TextureUpdateList {
         self.texture_cache.pending_updates()
     }
-
-/*
-    #[inline]
-    pub fn get_dummy_mask_image(&self) -> &TextureCacheItem {
-        self.texture_cache.get(self.dummy_mask_image_id)
-    }
-*/
 
     #[inline]
     pub fn get_dummy_color_image(&self) -> &TextureCacheItem {

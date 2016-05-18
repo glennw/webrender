@@ -378,6 +378,9 @@ pub enum PrimitiveShader {
     Prim1,
     Prim2,
     Prim3,
+    Prim1_Clip,
+    Prim2_Clip,
+    Prim3_Clip,
 }
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -739,7 +742,7 @@ impl ClipInfo {
            inner_radius: Point2D<f32>) -> ClipInfo {
         ClipInfo {
             ref_point: ref_point,
-            width: width,
+            width: Point2D::new(1.0, 1.0),
             outer_radius: outer_radius,
             inner_radius: inner_radius,
         }
@@ -1548,7 +1551,6 @@ pub struct FrameBuilder {
     layer_stack: Vec<LayerTemplateIndex>,
     color_texture_id: TextureId,
     mask_texture_id: TextureId,
-    scroll_offset: Point2D<f32>,
     device_pixel_ratio: f32,
     clips: Vec<Clip>,
     clip_index: Option<ClipIndex>,
@@ -1557,7 +1559,6 @@ pub struct FrameBuilder {
 
 impl FrameBuilder {
     pub fn new(viewport_size: Size2D<f32>,
-               scroll_offset: Point2D<f32>,
                device_pixel_ratio: f32) -> FrameBuilder {
         let viewport_size = Size2D::new(viewport_size.width as i32, viewport_size.height as i32);
         FrameBuilder {
@@ -1566,7 +1567,6 @@ impl FrameBuilder {
             layer_stack: Vec::new(),
             color_texture_id: TextureId(0),
             mask_texture_id: TextureId(0),
-            scroll_offset: scroll_offset,
             device_pixel_ratio: device_pixel_ratio,
             clips: Vec::new(),
             clip_index: None,
@@ -1588,10 +1588,11 @@ impl FrameBuilder {
                       rect: Rect<f32>,
                       transform: Matrix4D<f32>,
                       opacity: f32,
-                      pipeline_id: PipelineId) {
+                      pipeline_id: PipelineId,
+                      scroll_offset: Point2D<f32>) {
         // TODO(gw): Not 3d transform correct!
-        let scroll_transform = transform.translate(self.scroll_offset.x,
-                                                   self.scroll_offset.y,
+        let scroll_transform = transform.translate(scroll_offset.x,
+                                                   scroll_offset.y,
                                                    0.0);
 
         let layer_rect = TransformedRect::new(&rect, &transform);
@@ -2302,17 +2303,32 @@ impl FrameBuilder {
                 let mut draw_cmd = PackedDrawCommand::new(rect, layer.index_in_ubo);
 
                 let shader = if part_indices.len() <= MAX_PRIMITIVES_PER_PASS {
+                    let mut need_clip = false;
                     for (cmd_index, part_index) in part_indices.iter().enumerate() {
+                        // HACK HACK HACK
+                        if part_list.parts[*part_index].clip_info.width.x == 1.0 {
+                            need_clip = true;
+                        }
                         draw_cmd.set_primitive(cmd_index, part_offset + *part_index);
                     }
 
-                    match part_indices.len() {
-                        0 => panic!("wtf"),
-                        1 => PrimitiveShader::Prim1,
-                        2 => PrimitiveShader::Prim2,
-                        3 => PrimitiveShader::Prim3,
-                        _ => {
-                            //println!("found {} indices :(", c);
+                    match (part_indices.len(), need_clip) {
+                        (0, _) => panic!("wtf"),
+                        (1, false) => PrimitiveShader::Prim1,
+                        (2, false) => PrimitiveShader::Prim2,
+                        (3, false) => PrimitiveShader::Prim3,
+                        (1, true) => PrimitiveShader::Prim1_Clip,
+                        (2, true) => PrimitiveShader::Prim2_Clip,
+                        (3, true) => PrimitiveShader::Prim3_Clip,
+                        (c, _) => {
+                            /*
+                            println!("found {} indices :(", c);
+                            for pi in part_indices {
+                                let part = &part_list.parts[pi];
+                                println!("\t{:?} {:?} {:?} {:?} {:?} {:?}", part.kind, part.opacity,
+                                                                part.clip_info.outer_radius, part.clip_info.inner_radius, part.clip_info.ref_point, part.rect);
+                            }
+                            */
                             PrimitiveShader::Error
                         }
                     }

@@ -2,7 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/*
 use euclid::Point2D;
 
 /// Some arbitrarily small positive number used as threshold value.
@@ -102,6 +101,3 @@ fn next(cur: f32, prev: f32, dest: f32, stiffness: f32, damping: f32) -> f32 {
 fn is_resting(cur: f32, prev: f32, dest: f32) -> bool {
     (cur - prev).abs() < EPSILON && (cur - dest).abs() < EPSILON
 }
-
-
-*/

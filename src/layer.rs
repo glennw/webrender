@@ -2,16 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use aabbtree::{AABBTree, NodeIndex};
 use euclid::{Matrix4D, Point2D, Rect, Size2D};
-use internal_types::{BatchUpdate, BatchUpdateList, BatchUpdateOp};
-use internal_types::{DrawListItemIndex, DrawListId, DrawListGroupId};
 use spring::{DAMPING, STIFFNESS, Spring};
 use webrender_traits::{PipelineId, ScrollLayerId};
 
 pub struct Layer {
-    // TODO: Remove pub from here if possible in the future
-    pub aabb_tree: AABBTree,
     pub scrolling: ScrollingState,
     pub viewport_size: Size2D<f32>,
     pub layer_size: Size2D<f32>,
@@ -29,11 +24,7 @@ impl Layer {
                transform: Matrix4D<f32>,
                pipeline_id: PipelineId)
                -> Layer {
-        let rect = Rect::new(Point2D::zero(), layer_size);
-        let aabb_tree = AABBTree::new(8192.0, &rect);
-
         Layer {
-            aabb_tree: aabb_tree,
             scrolling: ScrollingState::new(),
             viewport_size: viewport_size,
             world_origin: world_origin,
@@ -49,45 +40,8 @@ impl Layer {
         self.children.push(child);
     }
 
-    pub fn reset(&mut self, pending_updates: &mut BatchUpdateList) {
-        for node in &mut self.aabb_tree.nodes {
-            if let Some(ref mut compiled_node) = node.compiled_node {
-                let vertex_buffer_id = compiled_node.vertex_buffer_id.take().unwrap();
-                pending_updates.push(BatchUpdate {
-                    id: vertex_buffer_id,
-                    op: BatchUpdateOp::Destroy,
-                });
-            }
-        }
-    }
-
-    #[inline]
-    pub fn insert(&mut self,
-                  rect: Rect<f32>,
-                  draw_list_group_id: DrawListGroupId,
-                  draw_list_id: DrawListId,
-                  item_index: DrawListItemIndex) {
-        self.aabb_tree.insert(rect,
-                              draw_list_group_id,
-                              draw_list_id,
-                              item_index);
-    }
-
     pub fn finalize(&mut self, scrolling: &ScrollingState) {
         self.scrolling = *scrolling;
-        self.aabb_tree.finalize();
-    }
-
-    pub fn cull(&mut self) {
-        // TODO(gw): Take viewport_size into account here!!!
-        let viewport_rect = Rect::new(Point2D::zero(), self.viewport_size);
-        let adjusted_viewport = viewport_rect.translate(&-self.scrolling.offset);
-        self.aabb_tree.cull(&adjusted_viewport);
-    }
-
-    #[allow(dead_code)]
-    pub fn print(&self) {
-        self.aabb_tree.print(NodeIndex(0), 0);
     }
 
     pub fn overscroll_amount(&self) -> Size2D<f32> {

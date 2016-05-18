@@ -124,7 +124,7 @@ pub struct Renderer {
     blur_program_id: ProgramId,
     u_direction: UniformLocation,
 
-    primitive_shaders: [ProgramId; 4],
+    primitive_shaders: [ProgramId; 7],
     text_program_id: ProgramId,
 
     notifier: Arc<Mutex<Option<Box<RenderNotifier>>>>,
@@ -171,11 +171,14 @@ impl Renderer {
         let max_raster_op_size = MAX_RASTER_OP_SIZE * options.device_pixel_ratio as u32;
 
         let text_program_id = device.create_program("text", "shared_other");
-        let primitive_shaders: [ProgramId; 4] = [
+        let primitive_shaders: [ProgramId; 7] = [
             create_prim_shader("ps_error", &mut device),
             create_prim_shader("ps_generic1", &mut device),
             create_prim_shader("ps_generic2", &mut device),
             create_prim_shader("ps_generic3", &mut device),
+            create_prim_shader("ps_generic1_clip", &mut device),
+            create_prim_shader("ps_generic2_clip", &mut device),
+            create_prim_shader("ps_generic3_clip", &mut device),
         ];
 
         let texture_ids = device.create_texture_ids(1024);

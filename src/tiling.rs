@@ -1607,7 +1607,7 @@ impl FrameBuilder {
             },
             rect: rect,
             primitives: Vec::new(),
-            quadtree: Quadtree::new(rect, 5, 32),
+            quadtree: Quadtree::new(rect, 256.0, 256.0, 32),
             pipeline_id: pipeline_id,
             device_pixel_ratio: self.device_pixel_ratio,
             index_in_ubo: 0,
@@ -2231,7 +2231,7 @@ impl FrameBuilder {
             }
         }
 
-        let mut tile_tree = Quadtree::new(screen_rect, 5, 8);
+        let mut tile_tree = Quadtree::new(screen_rect, 64.0, 0.0, 8);
 
         for (tile_index, tile) in tiles.iter().enumerate() {
             tile_tree.insert(tile_index, &|key| {

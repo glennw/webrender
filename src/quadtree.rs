@@ -33,16 +33,19 @@ impl<T> Node<T> {
 
 pub struct Quadtree<T> {
     pub nodes: Vec<Node<T>>,
-    max_levels: usize,
+    min_size: f32,
+    size_threshold: f32,
     split_threshold: usize,
 }
 
 impl<T: Copy + Debug> Quadtree<T> {
     pub fn new(rect: Rect<f32>,
-               max_levels: usize,
+               min_size: f32,
+               size_threshold: f32,
                split_threshold: usize) -> Quadtree<T> {
         Quadtree {
-            max_levels: max_levels,
+            min_size: min_size,
+            size_threshold: size_threshold,
             split_threshold: split_threshold,
             nodes: vec![Node::new(rect)],
         }
@@ -98,9 +101,12 @@ impl<T: Copy + Debug> Quadtree<T> {
         let rect = f(item);
         let (node_rect, item_count, has_children) = self.node_info(node_index);
         if node_rect.intersects(&rect) {
-            if !has_children &&
-               item_count == self.split_threshold &&
-               level < self.max_levels {
+            let can_split = !has_children && (node_rect.size.width > self.min_size ||
+                                              node_rect.size.height > self.min_size);
+            let want_split = (item_count == self.split_threshold) ||
+                             (self.size_threshold > 0.0 && (node_rect.size.width > self.size_threshold ||
+                                                            node_rect.size.height > self.size_threshold));
+            if can_split && want_split {
                 let x0 = node_rect.origin.x;
                 let y0 = node_rect.origin.y;
 

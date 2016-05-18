@@ -592,6 +592,7 @@ struct LayerTemplate {
     quadtree: Quadtree<PrimitiveIndex>,
     device_pixel_ratio: f32,
     index_in_ubo: u32,
+    rect: Rect<f32>,
 }
 
 #[repr(u32)]
@@ -1604,6 +1605,7 @@ impl FrameBuilder {
                 screen_vertices: layer_rect.vertices,
                 blend_info: [opacity, 0.0, 0.0, 0.0],
             },
+            rect: rect,
             primitives: Vec::new(),
             quadtree: Quadtree::new(rect, 5, 32),
             pipeline_id: pipeline_id,
@@ -2206,6 +2208,11 @@ impl FrameBuilder {
 
         let mut tiles = Vec::new();
         for (layer_index, layer) in self.layers.iter().enumerate() {
+            // If this layer is transparent, drop it completely!
+            if layer.packed.blend_info[0] == 0.0 {
+                continue;
+            }
+
             for (node_index, node) in layer.quadtree.nodes.iter().enumerate() {
                 if node.is_leaf() {
                     let node_screen_rect = TransformedRect::new(&node.rect,

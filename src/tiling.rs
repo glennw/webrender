@@ -2220,7 +2220,7 @@ impl FrameBuilder {
                     cover_part_indices.truncate(opaque_index+1);
                 }
 
-                let back_part = &part_list.parts[*cover_part_indices.first().unwrap()];
+                let back_part = &part_list.parts[*cover_part_indices.last().unwrap()];
                 match back_part.opacity {
                     Opacity::Opaque => {}
                     Opacity::Translucent => compiled_tile.is_opaque = false,

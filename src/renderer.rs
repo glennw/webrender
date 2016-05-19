@@ -40,7 +40,12 @@ pub const MAX_RASTER_OP_SIZE: u32 = 2048;
 const UBO_BIND_COMMANDS: u32 = 0;
 const UBO_BIND_PRIMITIVES: u32 = 1;
 const UBO_BIND_LAYERS: u32 = 2;
-//const UBO_BIND_CLIPS: u32 = 3;
+const UBO_BIND_GLYPHS: u32 = 3;
+
+struct PrimShader {
+    program_id: ProgramId,
+    u_cmd_offset: UniformLocation,
+}
 
 #[derive(Clone, Copy)]
 struct VertexBuffer {
@@ -89,7 +94,7 @@ impl FileWatcherHandler for FileWatcher {
     }
 }
 
-fn create_prim_shader(name: &'static str, device: &mut Device) -> ProgramId {
+fn create_prim_shader(name: &'static str, device: &mut Device) -> PrimShader {
     let program_id = device.create_program(name, "prim_shared");
 
     let cmds_index = gl::get_uniform_block_index(program_id.0, "Commands");
@@ -101,12 +106,14 @@ fn create_prim_shader(name: &'static str, device: &mut Device) -> ProgramId {
     let prim_index = gl::get_uniform_block_index(program_id.0, "Primitives");
     gl::uniform_block_binding(program_id.0, prim_index, UBO_BIND_PRIMITIVES);
 
-    //let clip_index = gl::get_uniform_block_index(program_id.0, "Clips");
-    //gl::uniform_block_binding(program_id.0, clip_index, UBO_BIND_CLIPS);
+    let u_cmd_offset = device.get_uniform_location(program_id, "uCmdOffset");
 
-    println!("PrimitiveShader {}: cmds={} layers={} prims={}", name, cmds_index, layer_index, prim_index);
+    println!("PrimitiveShader {}: cmds={} layers={} prims={} u_cmd_offset={:?}", name, cmds_index, layer_index, prim_index, u_cmd_offset);
 
-    program_id
+    PrimShader {
+        program_id: program_id,
+        u_cmd_offset: u_cmd_offset,
+    }
 }
 
 pub struct Renderer {
@@ -124,7 +131,7 @@ pub struct Renderer {
     blur_program_id: ProgramId,
     u_direction: UniformLocation,
 
-    primitive_shaders: [ProgramId; 7],
+    primitive_shaders: [PrimShader; 7],
     text_program_id: ProgramId,
 
     notifier: Arc<Mutex<Option<Box<RenderNotifier>>>>,
@@ -171,7 +178,11 @@ impl Renderer {
         let max_raster_op_size = MAX_RASTER_OP_SIZE * options.device_pixel_ratio as u32;
 
         let text_program_id = device.create_program("text", "shared_other");
-        let primitive_shaders: [ProgramId; 7] = [
+        let text_ubo_index = gl::get_uniform_block_index(text_program_id.0, "Glyphs");
+        gl::uniform_block_binding(text_program_id.0, text_ubo_index, UBO_BIND_GLYPHS);
+        println!("TextShader: glyphs={}", text_ubo_index);
+
+        let primitive_shaders: [PrimShader; 7] = [
             create_prim_shader("ps_error", &mut device),
             create_prim_shader("ps_generic1", &mut device),
             create_prim_shader("ps_generic2", &mut device),
@@ -251,25 +262,19 @@ impl Renderer {
         let y1 = 1.0;
 
         // TODO(gw): Consider separate VBO for quads vs border corners if VS ever shows up in profile!
-        let quad_indices: [u16; 6] = [ 0, 1, 2, 3, 4, 5 ];
+        let quad_indices: [u16; 6] = [ 0, 1, 2, 2, 1, 3 ];
         let quad_vertices = [
             PackedVertex {
-                pos: [x0, y0, 0.0],
+                pos: [x0, y0],
             },
             PackedVertex {
-                pos: [x1, y0, 0.0],
+                pos: [x1, y0],
             },
             PackedVertex {
-                pos: [x0, y1, 0.0],
+                pos: [x0, y1],
             },
             PackedVertex {
-                pos: [x0, y1, 1.0],
-            },
-            PackedVertex {
-                pos: [x1, y1, 1.0],
-            },
-            PackedVertex {
-                pos: [x1, y0, 1.0],
+                pos: [x1, y1],
             },
         ];
 
@@ -288,11 +293,9 @@ impl Renderer {
 
         let config = FrameBuilderConfig::new();
 
-        //let tile_size = options.tile_size;
-        //let allow_splitting = options.allow_splitting;
+        let debug = options.debug;
         let (device_pixel_ratio, enable_aa) = (options.device_pixel_ratio, options.enable_aa);
         let payload_tx_for_backend = payload_tx.clone();
-        //let descriptors = shader_list.descriptors.clone();
         thread::spawn(move || {
             let mut backend = RenderBackend::new(api_rx,
                                                  payload_rx,
@@ -304,7 +307,8 @@ impl Renderer {
                                                  enable_aa,
                                                  backend_notifier,
                                                  context_handle,
-                                                 config);
+                                                 config,
+                                                 debug);
             backend.run();
         });
 
@@ -333,7 +337,6 @@ impl Renderer {
             raster_op_target_a8: raster_op_target_a8,
             raster_op_target_rgba8: raster_op_target_rgba8,
             text_composite_target: text_composite_target,
-            //tiling_render_targets: [TextureId(0), TextureId(0)],
             max_raster_op_size: max_raster_op_size,
             gpu_profile_text: GpuProfile::new(),
             gpu_profile_tiling: GpuProfile::new(),
@@ -1002,7 +1005,10 @@ impl Renderer {
                  text_buffer: &TextBuffer,
                  texture: TextureId) {
         self.device.bind_render_target(Some(self.text_composite_target));
-        gl::viewport(0, 0, (TEXT_TARGET_SIZE * self.device_pixel_ratio as u32) as gl::GLint, (TEXT_TARGET_SIZE * self.device_pixel_ratio as u32) as gl::GLint);
+        gl::viewport(0,
+                     0,
+                     (TEXT_TARGET_SIZE * self.device_pixel_ratio as u32) as gl::GLint,
+                     (TEXT_TARGET_SIZE * self.device_pixel_ratio as u32) as gl::GLint);
 
         gl::clear_color(1.0, 1.0, 1.0, 0.0);
         gl::clear(gl::COLOR_BUFFER_BIT);
@@ -1014,54 +1020,24 @@ impl Renderer {
                                          ORTHO_NEAR_PLANE,
                                          ORTHO_FAR_PLANE);
 
-        let (mut indices, mut vertices) = (vec![], vec![]);
-
-        for glyph in &text_buffer.glyphs {
-            let base_index = vertices.len() as u16;
-            indices.push(base_index + 0);
-            indices.push(base_index + 1);
-            indices.push(base_index + 2);
-            indices.push(base_index + 2);
-            indices.push(base_index + 3);
-            indices.push(base_index + 1);
-
-            vertices.extend_from_slice(&[
-                FontVertex {
-                    x: glyph.p0.x,
-                    y: glyph.p0.y,
-                    s: glyph.st0.x,
-                    t: glyph.st0.y,
-                },
-                FontVertex {
-                    x: glyph.p1.x,
-                    y: glyph.p0.y,
-                    s: glyph.st1.x,
-                    t: glyph.st0.y,
-                },
-                FontVertex {
-                    x: glyph.p0.x,
-                    y: glyph.p1.y,
-                    s: glyph.st0.x,
-                    t: glyph.st1.y,
-                },
-                FontVertex {
-                    x: glyph.p1.x,
-                    y: glyph.p1.y,
-                    s: glyph.st1.x,
-                    t: glyph.st1.y,
-                },
-            ]);
-        }
-
-        let vao_id = self.device.create_vao(VertexFormat::Font, None);
-
         self.device.bind_program(self.text_program_id, &projection);
         self.device.bind_color_texture(texture);
-        self.device.bind_vao(vao_id);
-        self.device.update_vao_indices(vao_id, &indices[..], VertexUsageHint::Dynamic);
-        self.device.update_vao_main_vertices(vao_id, &vertices[..], VertexUsageHint::Dynamic);
-        self.device.draw_triangles_u16(0, indices.len() as gl::GLint);
-        self.device.delete_vao(vao_id);
+        self.device.bind_vao(self.quad_vao_id);
+        gl::disable(gl::BLEND);
+
+        // TODO(gw): Select chunk size based on max ubo size queried from device!
+        for chunk in text_buffer.glyphs.chunks(1024) {
+            let glyphs_ubos = gl::gen_buffers(1);
+            let glyphs_ubo = glyphs_ubos[0];
+
+            gl::bind_buffer(gl::UNIFORM_BUFFER, glyphs_ubo);
+            gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_GLYPHS, glyphs_ubo);
+
+            self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+
+            gl::delete_buffers(&glyphs_ubos);
+        }
     }
 
     fn add_debug_rect(&mut self, p0: Point2D<f32>, p1: Point2D<f32>, label: String) {
@@ -1099,7 +1075,7 @@ impl Renderer {
         self.debug.add_text((tile_x0 + tile_x1) * 0.5,
                             (tile_y0 + tile_y1) * 0.5,
                             &label,
-                            c);//&ColorF::new(0.0, 0.0, 0.0, 1.0));*/
+                            c);//&ColorF::new(0.0, 0.0, 0.0, 1.0));
     }
 
     fn draw_tile_frame(&mut self,
@@ -1113,7 +1089,6 @@ impl Renderer {
         for &(count, rect) in &frame.debug_rects {
             self.add_debug_rect(rect.origin, rect.bottom_right(), format!("{}", count));
         }
-        //println!("render: {} rects", frame.debug_rects.len());
 
         if frame.text_buffer.glyphs.len() > 0 {
             gl::disable(gl::BLEND);
@@ -1132,14 +1107,7 @@ impl Renderer {
         gl::viewport(0, 0, framebuffer_size.width as i32, framebuffer_size.height as i32);
         gl::clear_color(1.0, 1.0, 1.0, 0.0);
         gl::clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT | gl::STENCIL_BUFFER_BIT);
-
-        gl::enable(gl::BLEND);
         gl::blend_func(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-
-        //gl::enable(gl::STENCIL_TEST);
-        //gl::stencil_mask(0xff);
-        //gl::stencil_func(gl::EQUAL, 0, 0xff);
-        //gl::stencil_op(gl::KEEP, gl::INVERT, gl::INVERT);
 
         let projection = Matrix4D::ortho(0.0,
                                          frame.viewport_size.width as f32,
@@ -1148,55 +1116,52 @@ impl Renderer {
                                          ORTHO_NEAR_PLANE,
                                          ORTHO_FAR_PLANE);
 
+        let prim_ubos = gl::gen_buffers(frame.prim_ubos.len() as gl::GLint);
+        for (i, prim_ubo) in prim_ubos.iter().enumerate() {
+            gl::bind_buffer(gl::UNIFORM_BUFFER, *prim_ubo);
+            gl::buffer_data(gl::UNIFORM_BUFFER, &frame.prim_ubos[i].items, gl::STATIC_DRAW);
+        }
+
+        let cmd_ubos = gl::gen_buffers(frame.cmd_ubos.len() as gl::GLint);
+        for (i, cmd_ubo) in cmd_ubos.iter().enumerate() {
+            gl::bind_buffer(gl::UNIFORM_BUFFER, *cmd_ubo);
+            gl::buffer_data(gl::UNIFORM_BUFFER, &frame.cmd_ubos[i].items, gl::STATIC_DRAW);
+        }
+
         let layer_ubos = gl::gen_buffers(1);
         let layer_ubo = layer_ubos[0];
         gl::bind_buffer(gl::UNIFORM_BUFFER, layer_ubo);
         gl::buffer_data(gl::UNIFORM_BUFFER, &frame.layer_ubo.items, gl::STATIC_DRAW);
         gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_LAYERS, layer_ubo);
 
-        //let clip_ubos = gl::gen_buffers(1);
-        //let clip_ubo = clip_ubos[0];
-        //gl::bind_buffer(gl::UNIFORM_BUFFER, clip_ubo);
-        //gl::buffer_data(gl::UNIFORM_BUFFER, &frame.clips, gl::STATIC_DRAW);
-        //gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CLIPS, clip_ubo);
+        self.device.bind_color_texture(frame.color_texture_id);
+        self.device.bind_mask_texture(self.text_composite_target);
+        self.device.bind_vao(self.quad_vao_id);
 
-        for tile in &frame.tiles {
-            let tile = tile.result.as_ref().unwrap();
-            let prim_ubos = gl::gen_buffers(1);
-            let prim_ubo = prim_ubos[0];
-
-            gl::bind_buffer(gl::UNIFORM_BUFFER, prim_ubo);
-            gl::buffer_data(gl::UNIFORM_BUFFER, &tile.parts, gl::STATIC_DRAW);
-            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_PRIMITIVES, prim_ubo);
-
-            self.device.bind_color_texture(frame.color_texture_id);
-            self.device.bind_mask_texture(self.text_composite_target);
-            self.device.bind_vao(self.quad_vao_id);
-
-            for (key, cmds) in &tile.batches {
-
-                let cmd_ubos = gl::gen_buffers(1);
-                let cmd_ubo = cmd_ubos[0];
-
-                gl::bind_buffer(gl::UNIFORM_BUFFER, cmd_ubo);
-                gl::buffer_data(gl::UNIFORM_BUFFER, cmds, gl::STATIC_DRAW);
-                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_COMMANDS, cmd_ubo);
-
-                let program_id = self.primitive_shaders[key.shader as usize];
-                self.device.bind_program(program_id, &projection);
-                self.device.draw_indexed_triangles_instanced_u16(6, cmds.len() as i32);
-
-                self.profile_counters.vertices.add(6 * cmds.len());
-                self.profile_counters.draw_calls.inc();
-
-                gl::delete_buffers(&cmd_ubos);
+        for batch in &frame.batches {
+            if batch.opaque {
+                gl::disable(gl::BLEND);
+            } else {
+                gl::enable(gl::BLEND);
             }
 
-            gl::delete_buffers(&prim_ubos);
+            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_PRIMITIVES, prim_ubos[batch.prim_ubo_index]);
+            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_COMMANDS, cmd_ubos[batch.cmd_ubo_index]);
+
+            let shader = &self.primitive_shaders[batch.shader as usize];
+            self.device.bind_program(shader.program_id, &projection);
+
+            for draw_call in &batch.draw_calls {
+                self.device.set_uniform_1i(shader.u_cmd_offset, draw_call.cmd_offset as i32);
+                self.device.draw_indexed_triangles_instanced_u16(6, draw_call.instance_count as i32);
+                self.profile_counters.vertices.add(6 * draw_call.instance_count);
+                self.profile_counters.draw_calls.inc();
+            }
         }
+
         gl::delete_buffers(&layer_ubos);
-        //gl::delete_buffers(&clip_ubos);
-        //gl::disable(gl::STENCIL_TEST);
+        gl::delete_buffers(&prim_ubos);
+        gl::delete_buffers(&cmd_ubos);
         gl::disable(gl::BLEND);
 
         self.gpu_profile_tiling.end();
@@ -1229,6 +1194,5 @@ pub struct RendererOptions {
     pub enable_aa: bool,
     pub enable_msaa: bool,
     pub enable_profiler: bool,
-    pub tile_size: Size2D<i32>,
-    pub allow_splitting: bool,
+    pub debug: bool,
 }

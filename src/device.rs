@@ -304,7 +304,7 @@ impl VertexFormat {
                 let vertex_stride = mem::size_of::<PackedVertex>() as gl::GLuint;
 
                 gl::vertex_attrib_pointer(VertexAttribute::Position as gl::GLuint,
-                                          3,
+                                          2,
                                           gl::FLOAT,
                                           false,
                                           vertex_stride as gl::GLint,
@@ -1387,6 +1387,12 @@ impl Device {
     pub fn get_uniform_location(&self, program_id: ProgramId, name: &str) -> UniformLocation {
         let ProgramId(program_id) = program_id;
         UniformLocation(gl::get_uniform_location(program_id, name))
+    }
+
+    pub fn set_uniform_1i(&self, uniform: UniformLocation, x: i32) {
+        debug_assert!(self.inside_frame);
+        let UniformLocation(location) = uniform;
+        gl::uniform_1i(location, x);
     }
 
     pub fn set_uniform_2f(&self, uniform: UniformLocation, x: f32, y: f32) {

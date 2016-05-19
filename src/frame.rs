@@ -71,6 +71,7 @@ pub struct Frame {
     pub root_scroll_layer_id: Option<ScrollLayerId>,
     id: FrameId,
 
+    debug: bool,
     viewport_size: Size2D<i32>,
     frame_builder: Option<FrameBuilder>,
 }
@@ -200,7 +201,7 @@ impl StackingContextHelpers for StackingContext {
 }
 
 impl Frame {
-    pub fn new(_config: FrameBuilderConfig) -> Frame {
+    pub fn new(_config: FrameBuilderConfig, debug: bool) -> Frame {
         Frame {
             layers: HashMap::with_hasher(Default::default()),
             pipeline_epoch_map: HashMap::with_hasher(Default::default()),
@@ -208,6 +209,7 @@ impl Frame {
             root_scroll_layer_id: None,
             id: FrameId(0),
 
+            debug: debug,
             viewport_size: Size2D::zero(),
             frame_builder: None,
         }
@@ -406,7 +408,8 @@ impl Frame {
                     };
 
                     let mut frame_builder = FrameBuilder::new(root_pipeline.viewport_size,
-                                                              device_pixel_ratio);
+                                                              device_pixel_ratio,
+                                                              self.debug);
 
                     frame_builder.push_layer(root_stacking_context.stacking_context.bounds,
                                              Matrix4D::identity(),

@@ -192,7 +192,7 @@ pub struct PackedVertexForQuad {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct PackedVertex {
-    pub pos: [f32; 3],
+    pub pos: [f32; 2],
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -8,6 +8,7 @@ use device::{TextureId, TextureFilter};
 use euclid::{Point2D, Rect, Matrix4D, Size2D, Point4D};
 use fnv::FnvHasher;
 use frame::FrameId;
+use geometry::{rect_intersects_circle, circle_contains_rect};
 use internal_types::{AxisDirection, BoxShadowRasterOp, Glyph, GlyphKey, RasterItem, RectUv};
 use quadtree::Quadtree;
 use renderer::{BLUR_INFLATION_FACTOR, TEXT_TARGET_SIZE};
@@ -24,320 +25,197 @@ use webrender_traits::{ColorF, FontKey, ImageKey, ImageRendering, ComplexClipReg
 use webrender_traits::{BorderDisplayItem, BorderStyle, ItemRange, AuxiliaryLists, BorderRadius};
 use webrender_traits::{BoxShadowClipMode, PipelineId};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum EventKind {
-    Begin,
-    End,
+#[derive(Debug, Copy, Clone)]
+enum SplitKind {
+    Horizontal,
+    Vertical,
 }
 
-#[derive(Eq, PartialEq, Debug)]
-struct Event {
-    kind: EventKind,
-    value: Au,
-    key: usize,
+struct PartitionNode {
+    rect: Rect<f32>,
+    cover_parts: Vec<usize>,
+    partial_parts: Vec<usize>,
+    center_point: Point2D<f32>,
+    split_point: Point2D<f32>,
+    split_distance: Point2D<f32>,
+    prefer_split: SplitKind,
+    children: Vec<PartitionNode>,
 }
 
-impl Event {
-    fn begin(value: f32, key: usize) -> Event {
-        Event {
-            kind: EventKind::Begin,
-            value: Au::from_f32_px(value),
-            key: key,
+impl PartitionNode {
+    fn new(rect: Rect<f32>, prefer_split: SplitKind) -> PartitionNode {
+        let center_point = Point2D::new(rect.origin.x + rect.size.width * 0.5,
+                                        rect.origin.y + rect.size.height * 0.5);
+        PartitionNode {
+            rect: rect,
+            cover_parts: Vec::new(),
+            partial_parts: Vec::new(),
+            center_point: center_point,
+            prefer_split: prefer_split,
+            children: Vec::new(),
+            split_point: center_point,
+            split_distance: Point2D::new(f32::MAX, f32::MAX),
         }
     }
 
-    fn end(value: f32, key: usize) -> Event {
-        Event {
-            kind: EventKind::End,
-            value: Au::from_f32_px(value),
-            key: key,
-        }
-    }
-}
+    fn add(&mut self,
+           index: usize,
+           part: &PrimitivePart) {
 
-impl PartialOrd for Event {
-    fn partial_cmp(&self, other: &Event) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
+        // broadphase test
+        if part.rect.intersects(&self.rect) {
 
-impl Ord for Event {
-    fn cmp(&self, other: &Event) -> Ordering {
-        if self.value != other.value {
-            return self.value.partial_cmp(&other.value).unwrap();
-        }
+            // narrowphase
+            let (intersects, covers) = if part.clip_info.is_valid() {
+                // TODO(gw): Support irregular radii!
+                let center = &part.clip_info.ref_point;
+                let outer_radius = part.clip_info.outer_radius.x;
+                let inner_radius = part.clip_info.inner_radius.x;
+                let int = rect_intersects_circle(center, outer_radius, &self.rect) &&
+                          !circle_contains_rect(center, inner_radius, &self.rect);
+                let cover = int &&
+                            part.rect.contains_rect(&self.rect) &&
+                            self.rect.size.width < 16.0 &&
+                            self.rect.size.height < 16.0;
+                (int, cover)
+            } else {
+                (part.rect.intersects(&self.rect), part.rect.contains_rect(&self.rect))
+            };
 
-        if self.key != other.key {
-            return self.key.cmp(&other.key)
-        }
+            if covers {
+                self.cover_parts.push(index);
+            } else if intersects {
+                let rect = &part.rect;
+                let rx0 = rect.origin.x;
+                let ry0 = rect.origin.y;
+                let rx1 = rx0 + rect.size.width;
+                let ry1 = ry0 + rect.size.height;
 
-        match (self.kind, other.kind) {
-            (EventKind::Begin, EventKind::Begin) => Ordering::Equal,
-            (EventKind::End, EventKind::End) => Ordering::Equal,
-            (EventKind::Begin, EventKind::End) => Ordering::Greater,
-            (EventKind::End, EventKind::Begin) => Ordering::Less,
-        }
-    }
-}
+                let sx0 = self.rect.origin.x;
+                let sy0 = self.rect.origin.y;
+                let sx1 = sx0 + self.rect.size.width;
+                let sy1 = sy0 + self.rect.size.height;
 
-struct OpenRect {
-    keys: HashSet<usize>,
-    x0: f32,
-    y0: f32,
-    y1: f32,
-}
-
-impl OpenRect {
-    fn new(keys: HashSet<usize>, x0: f32, y0: f32, y1: f32) -> OpenRect {
-        OpenRect {
-            keys: keys,
-            x0: x0,
-            y0: y0,
-            y1: y1,
-        }
-    }
-}
-
-struct Sap {
-    //rectangles: Vec<Rect<f32>>,
-    //keys: Vec<T>,
-}
-
-impl Sap {
-    fn new() -> Sap {
-        Sap {
-            //rectangles: Vec::new(),
-            //keys: Vec::new(),
-        }
-    }
-
-/*
-    #[inline]
-    fn push(&mut self, rect: &Rect<f32>, key: T) {
-        self.rectangles.push(*rect);
-        self.keys.push(key);
-    }*/
-
-    fn doit<F>(&self,
-               bounding_rect: &Rect<f32>,
-               parts: &Vec<PrimitivePart>,
-               mut f: F) where F: FnMut(&Rect<f32>, Vec<usize>) {
-
-        let event_count = parts.len() * 2;
-        let mut x_events = Vec::with_capacity(event_count);
-        for (part_index, part) in parts.iter().enumerate() {
-            if bounding_rect.intersects(&part.rect) {
-                let px0 = part.rect.origin.x.max(bounding_rect.origin.x);
-                let px1 = (part.rect.origin.x + part.rect.size.width).min(bounding_rect.origin.x + bounding_rect.size.width);
-                debug_assert!(px0 != px1, format!("pr={:?} br={:?}", part.rect, bounding_rect));
-
-                x_events.push(Event::begin(px0, part_index));
-                x_events.push(Event::end(px1, part_index));
-            }
-        }
-        x_events.sort();
-
-        let mut open_rects: Vec<OpenRect> = Vec::new();
-
-        for xe in x_events {
-            let rect = &parts[xe.key].rect;
-
-            match xe.kind {
-                EventKind::Begin => {
-                    let py0 = rect.origin.y.max(bounding_rect.origin.y);
-                    let py1 = (rect.origin.y + rect.size.height).min(bounding_rect.origin.y + bounding_rect.size.height);
-                    debug_assert!(py0 != py1);
-
-                    let mut y_events = Vec::new();
-                    y_events.push(Event::begin(py0, xe.key));
-                    y_events.push(Event::end(py1, xe.key));
-
-                    let mut new_open_rects = Vec::new();
-                    for open_rect in open_rects.drain(..) {
-                        if open_rect.y0 < py1 && py0 < open_rect.y1 {
-                            if xe.value.to_f32_px() > open_rect.x0 {
-                                // TODO(gw): Fix extra key dereferencing here!
-                                let mut user_keys = Vec::new();
-                                for key in &open_rect.keys {
-                                    user_keys.push(*key);
-                                }
-                                f(&Rect::from_points(open_rect.x0,
-                                                     open_rect.y0,
-                                                     xe.value.to_f32_px(),
-                                                     open_rect.y1),
-                                  user_keys);
-                            }
-                            for key in open_rect.keys {
-                                y_events.push(Event::begin(open_rect.y0, key));
-                                y_events.push(Event::end(open_rect.y1, key));
-                            }
-                        } else {
-                            new_open_rects.push(open_rect);
-                        }
-                    }
-                    open_rects = new_open_rects;
-
-                    y_events.sort();
-                    let mut active_y = HashSet::new();
-                    let mut y0 = y_events[0].value;
-
-                    for i in 0..y_events.len() {
-                        let ye = &y_events[i];
-
-                        if i == y_events.len()-1 || (i > 0 && ye.value > y_events[i-1].value) {
-                            if active_y.len() > 0 && ye.value > y0 {
-                                open_rects.push(OpenRect::new(active_y.clone(), xe.value.to_f32_px(), y0.to_f32_px(), ye.value.to_f32_px()));
-                            }
-                            y0 = ye.value;
-                        }
-
-                        match ye.kind {
-                            EventKind::Begin => {
-                                active_y.insert(ye.key);
-                            }
-                            EventKind::End => {
-                                active_y.remove(&ye.key);
-                            }
-                        }
-                    }
+                let dist_from_p0 = Point2D::new((rx0 - self.center_point.x).abs(),
+                                                (ry0 - self.center_point.y).abs());
+                if rx0 > sx0 && dist_from_p0.x < self.split_distance.x {
+                    self.split_distance.x = dist_from_p0.x;
+                    self.split_point.x = rx0;
                 }
-                EventKind::End => {
-                    let mut new_open_rects = Vec::new();
-                    for mut rect in open_rects.drain(..) {
-                        if rect.keys.contains(&xe.key) {
-                            if xe.value.to_f32_px() > rect.x0 {
-                                // TODO(gw): Fix extra key dereferencing here!
-                                let mut user_keys = Vec::new();
-                                for key in &rect.keys {
-                                    user_keys.push(*key);
-                                }
-                                f(&Rect::from_points(rect.x0,
-                                                     rect.y0,
-                                                     xe.value.to_f32_px(),
-                                                     rect.y1),
-                                  user_keys);
-                            }
-                            rect.keys.remove(&xe.key);
-                            rect.x0 = xe.value.to_f32_px();
-                            if rect.keys.len() > 0 {
-                                new_open_rects.push(rect);
-                            }
-                        } else {
-                            new_open_rects.push(rect);
-                        }
-                    }
-                    open_rects = new_open_rects;
+                if ry0 > sy0 && dist_from_p0.y < self.split_distance.y {
+                    self.split_distance.y = dist_from_p0.y;
+                    self.split_point.y = ry0;
                 }
+
+                let dist_from_p1 = Point2D::new((rx1 - self.center_point.x).abs(),
+                                                (ry1 - self.center_point.y).abs());
+                if rx1 < sx1 && dist_from_p1.x < self.split_distance.x {
+                    self.split_distance.x = dist_from_p1.x;
+                    self.split_point.x = rx1;
+                }
+                if ry1 < sy1 && dist_from_p1.y < self.split_distance.y {
+                    self.split_distance.y = dist_from_p1.y;
+                    self.split_point.y = ry1;
+                }
+
+                self.partial_parts.push(index);
             }
         }
     }
+
+    fn split(&mut self,
+             min_size: f32,
+             parts: &Vec<PrimitivePart>) {
+        if self.partial_parts.is_empty() ||
+           self.rect.size.width <= min_size ||
+           self.rect.size.height <= min_size {
+            return;
+        }
+
+        let found_split_horizontal = self.split_distance.y != f32::MAX;
+        let found_split_vertical = self.split_distance.x != f32::MAX;
+
+        let actual_split = match (found_split_horizontal, found_split_vertical) {
+            (true, true) => self.prefer_split,
+            (true, false) => SplitKind::Horizontal,
+            (false, true) => SplitKind::Vertical,
+            (false, false) => self.prefer_split,
+        };
+
+        let next_split = match actual_split {
+            SplitKind::Horizontal => SplitKind::Vertical,
+            SplitKind::Vertical => SplitKind::Horizontal,
+        };
+
+        let x0 = self.rect.origin.x;
+        let y0 = self.rect.origin.y;
+        let x1 = x0 + self.rect.size.width;
+        let y1 = y0 + self.rect.size.height;
+
+        debug_assert!(self.split_point.x > x0);
+        debug_assert!(self.split_point.x < x1);
+        debug_assert!(self.split_point.y > y0);
+        debug_assert!(self.split_point.y < y1);
+
+        let (r0, r1) = match actual_split {
+            SplitKind::Horizontal => {
+                (Rect::from_points(x0, y0, x1, self.split_point.y),
+                 Rect::from_points(x0, self.split_point.y, x1, y1))
+            }
+            SplitKind::Vertical => {
+                (Rect::from_points(x0, y0, self.split_point.x, y1),
+                 Rect::from_points(self.split_point.x, y0, x1, y1))
+            }
+        };
+
+        let mut c0 = PartitionNode::new(r0, next_split);
+        let mut c1 = PartitionNode::new(r1, next_split);
+
+        for key in self.partial_parts.drain(..) {
+            let part = &parts[key];
+            c0.add(key, part);
+            c1.add(key, part);
+        }
+
+        self.children.push(c0);
+        self.children.push(c1);
+
+        for child in &mut self.children {
+            child.split(min_size, parts);
+        }
+    }
+
+    fn collect<F>(&self, cover_parts: &Vec<usize>, f: &mut F) where F: FnMut(&Rect<f32>, Vec<usize>, Vec<usize>) {
+        let mut cover_parts = cover_parts.clone();
+        cover_parts.extend_from_slice(&self.cover_parts);
+
+        if self.children.is_empty() {
+            // TODO(gw): Reduce copies here!
+            f(&self.rect, cover_parts.clone(), self.partial_parts.clone());
+        } else {
+            debug_assert!(self.partial_parts.is_empty());
+        }
+
+        for child in &self.children {
+            child.collect(&cover_parts, f);
+        }
+    }
 }
 
-fn sap<F>(bounding_rect: &Rect<f32>,
-          parts: &Vec<PrimitivePart>,
-          mut f: F) where F: FnMut(Rect<f32>, &HashSet<usize>) {
-    let event_count = parts.len() * 2;
-    let mut x_events = Vec::with_capacity(event_count);
+fn partition_parts<F>(bounding_rect: Rect<f32>,
+                      parts: &Vec<PrimitivePart>,
+                      f: &mut F) where F: FnMut(&Rect<f32>, Vec<usize>, Vec<usize>) {
+    let mut root = PartitionNode::new(bounding_rect, SplitKind::Horizontal);
+
     for (part_index, part) in parts.iter().enumerate() {
-        if bounding_rect.intersects(&part.rect) {
-            //if rect_contains_rect(&part.rect, bounding_rect) {
-            //    cover_parts.push(part_index);
-            //    continue;
-            //}
-
-            let px0 = part.rect.origin.x.max(bounding_rect.origin.x);
-            let px1 = (part.rect.origin.x + part.rect.size.width).min(bounding_rect.origin.x + bounding_rect.size.width);
-            debug_assert!(px0 != px1);
-
-            x_events.push(Event::begin(px0, part_index));
-            x_events.push(Event::end(px1, part_index));
-        }
+        root.add(part_index, part);
     }
-    x_events.sort();
 
-    let mut open_rects: Vec<OpenRect> = Vec::new();
+    let min_size = 0.0;
+    //debug_assert!(min_size > 0.0);
 
-    for xe in x_events {
-        let rect = &parts[xe.key].rect;
-
-        match xe.kind {
-            EventKind::Begin => {
-                let py0 = rect.origin.y.max(bounding_rect.origin.y);
-                let py1 = (rect.origin.y + rect.size.height).min(bounding_rect.origin.y + bounding_rect.size.height);
-                debug_assert!(py0 != py1);
-
-                let mut y_events = Vec::new();
-                y_events.push(Event::begin(py0, xe.key));
-                y_events.push(Event::end(py1, xe.key));
-
-                let mut new_open_rects = Vec::new();
-                for open_rect in open_rects.drain(..) {
-                    if open_rect.y0 < py1 && py0 < open_rect.y1 {
-                        if xe.value.to_f32_px() > open_rect.x0 {
-                            f(Rect::from_points(open_rect.x0,
-                                                open_rect.y0,
-                                                xe.value.to_f32_px(),
-                                                open_rect.y1),
-                              &open_rect.keys);
-                        }
-                        for key in open_rect.keys {
-                            y_events.push(Event::begin(open_rect.y0, key));
-                            y_events.push(Event::end(open_rect.y1, key));
-                        }
-                    } else {
-                        new_open_rects.push(open_rect);
-                    }
-                }
-                open_rects = new_open_rects;
-
-                y_events.sort();
-                let mut active_y = HashSet::new();
-                let mut y0 = y_events[0].value;
-
-                for i in 0..y_events.len() {
-                    let ye = &y_events[i];
-
-                    if i == y_events.len()-1 || (i > 0 && ye.value > y_events[i-1].value) {
-                        if active_y.len() > 0 && ye.value > y0 {
-                            open_rects.push(OpenRect::new(active_y.clone(), xe.value.to_f32_px(), y0.to_f32_px(), ye.value.to_f32_px()));
-                        }
-                        y0 = ye.value;
-                    }
-
-                    match ye.kind {
-                        EventKind::Begin => {
-                            active_y.insert(ye.key);
-                        }
-                        EventKind::End => {
-                            active_y.remove(&ye.key);
-                        }
-                    }
-                }
-            }
-            EventKind::End => {
-                let mut new_open_rects = Vec::new();
-                for mut rect in open_rects.drain(..) {
-                    if rect.keys.contains(&xe.key) {
-                        if xe.value.to_f32_px() > rect.x0 {
-                            f(Rect::from_points(rect.x0,
-                                                rect.y0,
-                                                xe.value.to_f32_px(),
-                                                rect.y1),
-                              &rect.keys);
-                        }
-                        rect.keys.remove(&xe.key);
-                        rect.x0 = xe.value.to_f32_px();
-                        if rect.keys.len() > 0 {
-                            new_open_rects.push(rect);
-                        }
-                    } else {
-                        new_open_rects.push(rect);
-                    }
-                }
-                open_rects = new_open_rects;
-            }
-        }
-    }
+    root.split(min_size, parts);     // XXX Todo!
+    root.collect(&Vec::new(), f);
 }
 
 const MAX_PRIMITIVES_PER_PASS: usize = 4;
@@ -347,8 +225,7 @@ const INVALID_CLIP_INDEX: ClipIndex = ClipIndex(0xffffffff);
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct ClipIndex(u32);
 
-// TODO (gw): Profile and create a smaller layout for simple passes if worthwhile...
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PackedDrawCommand {
     pub tile_p0: Point2D<f32>,
     pub tile_p1: Point2D<f32>,
@@ -383,44 +260,70 @@ pub enum PrimitiveShader {
     Prim3_Clip,
 }
 
+#[derive(Debug)]
+pub struct DrawCall {
+    pub cmd_offset: usize,
+    pub instance_count: usize,
+}
+
+pub struct Batch {
+    pub layer_index: usize,           // TODO: Remove me!
+    pub opaque: bool,
+    pub shader: PrimitiveShader,
+    pub prim_ubo_index: usize,
+    pub cmd_ubo_index: usize,
+    pub draw_calls: Vec<DrawCall>,
+}
+
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub struct BatchKey {
     pub shader: PrimitiveShader,
-    pub prim_ubo_index: usize,
 }
 
 impl BatchKey {
-    fn new(shader: PrimitiveShader, prim_ubo_index: usize) -> BatchKey {
+    fn new(shader: PrimitiveShader) -> BatchKey {
         BatchKey {
             shader: shader,
-            prim_ubo_index: prim_ubo_index,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Ubo<KEY: Eq + Hash, TYPE> {
+pub struct Ubo<TYPE> {
     pub items: Vec<TYPE>,
-    map: HashMap<KEY, usize, BuildHasherDefault<FnvHasher>>,
 }
 
-impl<KEY: Eq + Hash + Copy, TYPE: Clone> Ubo<KEY, TYPE> {
-    fn new() -> Ubo<KEY, TYPE> {
+impl<TYPE: Clone> Ubo<TYPE> {
+    fn new() -> Ubo<TYPE> {
         Ubo {
             items: Vec::new(),
-            map: HashMap::with_hasher(Default::default()),
         }
     }
 
-    fn maybe_insert_and_get_index(&mut self, key: KEY, data: &TYPE) -> u32 {
-        let map = &mut self.map;
-        let items = &mut self.items;
+    fn size(&self) -> usize {
+        let item_size = mem::size_of::<TYPE>();
+        self.items.len() * item_size
+    }
 
-        *map.entry(key).or_insert_with(|| {
-            let index = items.len();
-            items.push(data.clone());
-            index
-        }) as u32
+    fn can_fit(&self, new_items: &[TYPE], max_ubo_size: usize) -> bool {
+        let item_size = mem::size_of::<TYPE>();
+        let current_size = self.items.len() * item_size;
+        let extra_size = new_items.len() * item_size;
+        current_size + extra_size < max_ubo_size
+    }
+
+    #[inline]
+    fn push(&mut self, new_item: &TYPE) -> u32 {
+        let index = self.items.len() as u32;
+        self.items.push(new_item.clone());
+        index
+    }
+
+    #[inline]
+    fn push_slice(&mut self, new_items: &[TYPE]) -> u32 {
+        let index = self.items.len() as u32;
+        self.items.extend_from_slice(new_items);
+        index
     }
 }
 
@@ -747,6 +650,11 @@ impl ClipInfo {
             outer_radius: outer_radius,
             inner_radius: inner_radius,
         }
+    }
+
+    // hack hack hack
+    fn is_valid(&self) -> bool {
+        self.width.x == 1.0
     }
 
     fn invalid() -> ClipInfo {
@@ -1537,9 +1445,10 @@ impl FrameBuilderConfig {
 
 pub struct Frame {
     pub viewport_size: Size2D<u32>,
-    pub layer_ubo: Ubo<LayerTemplateIndex, PackedLayer>, // TODO(gw): Handle batching this, in crazy case where layer count > ubo size!
-    //pub clips: Vec<Clip>, // TODO(gw): Handle batching this, in crazy case where layer count > ubo size!
-    pub tiles: Vec<Tile>,
+    pub layer_ubo: Ubo<PackedLayer>, // TODO(gw): Handle batching this, in crazy case where layer count > ubo size!
+    pub prim_ubos: Vec<Ubo<PrimitivePart>>,
+    pub cmd_ubos: Vec<Ubo<PackedDrawCommand>>,
+    pub batches: Vec<Batch>,
     pub text_buffer: TextBuffer,
     pub color_texture_id: TextureId,
     pub mask_texture_id: TextureId,
@@ -1556,11 +1465,13 @@ pub struct FrameBuilder {
     clips: Vec<Clip>,
     clip_index: Option<ClipIndex>,
     next_text_run_key: usize,
+    debug: bool,
 }
 
 impl FrameBuilder {
     pub fn new(viewport_size: Size2D<f32>,
-               device_pixel_ratio: f32) -> FrameBuilder {
+               device_pixel_ratio: f32,
+               debug: bool) -> FrameBuilder {
         let viewport_size = Size2D::new(viewport_size.width as i32, viewport_size.height as i32);
         FrameBuilder {
             screen_rect: Rect::new(Point2D::zero(), viewport_size),
@@ -1572,6 +1483,7 @@ impl FrameBuilder {
             clips: Vec::new(),
             clip_index: None,
             next_text_run_key: 0,
+            debug: debug,
         }
     }
 
@@ -2199,7 +2111,7 @@ impl FrameBuilder {
 
         for (layer_index, layer) in self.layers.iter_mut().enumerate() {
             let layer_index = LayerTemplateIndex(layer_index as u32);
-            layer.index_in_ubo = layer_ubo.maybe_insert_and_get_index(layer_index, &layer.packed);
+            layer.index_in_ubo = layer_ubo.push(&layer.packed);
         }
 
         let screen_rect = Rect::new(Point2D::zero(),
@@ -2286,40 +2198,42 @@ impl FrameBuilder {
             let layer = &self.layers[tile.layer_index];
             let node = &layer.quadtree.nodes[tile.node_index];
 
-            debug_rects.push((node.items.len(), layer.packed.transform.transform_rect(&node.rect)));
+            //debug_rects.push((node.items.len(), layer.packed.transform.transform_rect(&node.rect)));
 
-            let part_offset = compiled_tile.parts.len();
+            partition_parts(node.rect, &part_list.parts, &mut |rect, mut cover_part_indices, mut partial_part_indices| {
+                if cover_part_indices.is_empty() {
+                    return;
+                }
 
-            let sap = Sap::new();
-            sap.doit(&node.rect, &part_list.parts, |rect, mut part_indices| {
-                part_indices.sort_by(|a, b| {
+                cover_part_indices.sort_by(|a, b| {
                     b.cmp(&a)
                 });
 
-                let opaque_index = part_indices.iter().position(|pi| {
+                let opaque_index = cover_part_indices.iter().position(|pi| {
                     let part = &part_list.parts[*pi];
                     part.opacity == Opacity::Opaque
                 });
 
                 if let Some(opaque_index) = opaque_index {
-                    part_indices.truncate(opaque_index+1);
+                    cover_part_indices.truncate(opaque_index+1);
                 }
 
-                //debug_rects.push((indices.len(), layer.packed.transform.transform_rect(&rect)));
+                if self.debug {
+                    debug_rects.push((cover_part_indices.len(), layer.packed.transform.transform_rect(&rect)));
+                }
 
                 let mut draw_cmd = PackedDrawCommand::new(rect, layer.index_in_ubo);
 
-                let shader = if part_indices.len() <= MAX_PRIMITIVES_PER_PASS {
+                let shader = if cover_part_indices.len() <= MAX_PRIMITIVES_PER_PASS {
                     let mut need_clip = false;
-                    for (cmd_index, part_index) in part_indices.iter().enumerate() {
-                        // HACK HACK HACK
-                        if part_list.parts[*part_index].clip_info.width.x == 1.0 {
+                    for (cmd_index, part_index) in cover_part_indices.iter().enumerate() {
+                        if part_list.parts[*part_index].clip_info.is_valid() {
                             need_clip = true;
                         }
-                        draw_cmd.set_primitive(cmd_index, part_offset + *part_index);
+                        draw_cmd.set_primitive(cmd_index, *part_index);
                     }
 
-                    match (part_indices.len(), need_clip) {
+                    match (cover_part_indices.len(), need_clip) {
                         (0, _) => panic!("wtf"),
                         (1, false) => PrimitiveShader::Prim1,
                         (2, false) => PrimitiveShader::Prim2,
@@ -2345,24 +2259,136 @@ impl FrameBuilder {
                 };
 
                 // TODO(gw): All kinds of broken here when >1 prim ubo is needed...!
-                let key = BatchKey::new(shader, 0);
+                let key = BatchKey::new(shader);
                 let batch = compiled_tile.batches.entry(key).or_insert_with(|| {
                     Vec::new()
                 });
                 batch.push(draw_cmd);
             });
 
-            compiled_tile.parts.extend_from_slice(&part_list.parts);
+            compiled_tile.parts = part_list.parts;
 
             tile.result = Some(compiled_tile);
         }
+
+        // Create batches, based on overlap. Also do basic occlusion culling here.
+        let part_size = mem::size_of::<PrimitivePart>();
+        let cmd_size = mem::size_of::<PackedDrawCommand>();
+        let max_ubo_size = 64 * 1024;       // TODO(gw): Query this from device!
+        let mut prim_ubos: Vec<Ubo<PrimitivePart>> = Vec::new();
+        let mut cmd_ubos: Vec<Ubo<PackedDrawCommand>> = Vec::new();
+        let mut batches: Vec<Batch> = Vec::new();
+
+        for tile in tiles {
+            let compiled_tile = tile.result.unwrap();
+            let layer = &self.layers[tile.layer_index];
+            let is_opaque = layer.packed.blend_info[0] == 1.0;
+
+            let need_new_prim_ubo = match prim_ubos.last() {
+                Some(ubo) => !ubo.can_fit(&compiled_tile.parts, max_ubo_size),
+                None => true,
+            };
+            if need_new_prim_ubo {
+                prim_ubos.push(Ubo::new());
+            }
+            let part_offset_in_ubo = prim_ubos.last_mut()
+                                              .unwrap()
+                                              .push_slice(&compiled_tile.parts);
+            let prim_ubo_index = prim_ubos.len() - 1;
+
+            for (key, mut cmds) in compiled_tile.batches {
+
+                let need_new_cmd_ubo = match cmd_ubos.last() {
+                    Some(ubo) => !ubo.can_fit(&cmds, max_ubo_size),
+                    None => true,
+                };
+                if need_new_cmd_ubo {
+                    cmd_ubos.push(Ubo::new());
+                }
+                let cmd_ubo_index = cmd_ubos.len() - 1;
+                let cmd_ubo = cmd_ubos.last_mut().unwrap();
+                let cmd_offset = cmd_ubo.items.len();
+                for mut cmd in &mut cmds {
+                    for pi in &mut cmd.prim_indices {
+                        if *pi != INVALID_PRIM_INDEX {
+                            *pi += part_offset_in_ubo;
+                        }
+                    }
+                    cmd_ubo.push(cmd);
+                }
+
+                let mut found_batch = false;
+                for batch in &mut batches {
+                    if batch.shader == key.shader &&
+                       batch.prim_ubo_index == prim_ubo_index &&
+                       batch.cmd_ubo_index == cmd_ubo_index &&
+                       batch.layer_index == tile.layer_index &&
+                       batch.opaque == is_opaque {
+
+                        let last_offset = {
+                            let dc = &batch.draw_calls.last().unwrap();
+                            dc.cmd_offset + dc.instance_count
+                        };
+
+                        if last_offset == cmd_offset {
+                            batch.draw_calls.last_mut().unwrap().instance_count += cmds.len();
+                        } else {
+                            batch.draw_calls.push(DrawCall {
+                                cmd_offset: cmd_offset,
+                                instance_count: cmds.len(),
+                            });
+                        }
+
+                        found_batch = true;
+                        break;
+                    }
+                }
+
+                if !found_batch {
+                    batches.push(Batch {
+                        layer_index: tile.layer_index,
+                        opaque: is_opaque,
+                        prim_ubo_index: prim_ubo_index,
+                        cmd_ubo_index: cmd_ubo_index,
+                        shader: key.shader,
+                        draw_calls: vec![DrawCall {
+                            cmd_offset: cmd_offset,
+                            instance_count: cmds.len(),
+                        }],
+                    });
+                }
+            }
+        }
+
+        /*
+        println!("----- RENDER -----");
+        println!("\t{} prim ubos", prim_ubos.len());
+        for ubo in &prim_ubos {
+            println!("\t\t{:?}", ubo.size());
+        }
+        println!("\t{} cmd ubos", cmd_ubos.len());
+        for ubo in &cmd_ubos {
+            println!("\t\t{:?}", ubo.size());
+        }
+        println!("-- {} batches --", batches.len());
+        for batch in &batches {
+            println!("\tl={:?} p={} c={} dc={} s={:?}", batch.layer_index,
+                                                        batch.prim_ubo_index,
+                                                        batch.cmd_ubo_index,
+                                                        batch.draw_calls.len(),
+                                                        batch.shader);
+            for dc in &batch.draw_calls {
+                println!("\t\t{:?}", dc);
+            }
+        }*/
 
         Frame {
             viewport_size: Size2D::new(self.screen_rect.size.width as u32,
                                        self.screen_rect.size.height as u32),
             layer_ubo: layer_ubo,
-            //clips: mem::replace(&mut self.clips, Vec::new()),
-            tiles: tiles,
+            prim_ubos: prim_ubos,
+            cmd_ubos: cmd_ubos,
+            batches: batches,
             text_buffer: text_buffer,
             debug_rects: debug_rects,
             color_texture_id: self.color_texture_id,

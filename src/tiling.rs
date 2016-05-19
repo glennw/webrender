@@ -336,6 +336,7 @@ pub struct Tile {
 }
 
 pub struct CompiledTile {
+    pub is_opaque: bool,
     pub parts: Vec<PrimitivePart>,
     pub batches: HashMap<BatchKey, Vec<PackedDrawCommand>>,
 }
@@ -343,6 +344,7 @@ pub struct CompiledTile {
 impl CompiledTile {
     fn new() -> CompiledTile {
         CompiledTile {
+            is_opaque: true,
             parts: Vec::new(),
             batches: HashMap::new(),
         }
@@ -2218,6 +2220,12 @@ impl FrameBuilder {
                     cover_part_indices.truncate(opaque_index+1);
                 }
 
+                let back_part = &part_list.parts[*cover_part_indices.first().unwrap()];
+                match back_part.opacity {
+                    Opacity::Opaque => {}
+                    Opacity::Translucent => compiled_tile.is_opaque = false,
+                }
+
                 if self.debug {
                     debug_rects.push((cover_part_indices.len(), layer.packed.transform.transform_rect(&rect)));
                 }
@@ -2282,7 +2290,8 @@ impl FrameBuilder {
         for tile in tiles {
             let compiled_tile = tile.result.unwrap();
             let layer = &self.layers[tile.layer_index];
-            let is_opaque = layer.packed.blend_info[0] == 1.0;
+            let is_opaque = layer.packed.blend_info[0] == 1.0 &&
+                            compiled_tile.is_opaque;
 
             let need_new_prim_ubo = match prim_ubos.last() {
                 Some(ubo) => !ubo.can_fit(&compiled_tile.parts, max_ubo_size),

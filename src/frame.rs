@@ -729,9 +729,6 @@ impl Frame {
                         self.layers.insert(scroll_layer_id, layer);
                         info.default_scroll_layer_id = scroll_layer_id;
                         info.actual_scroll_layer_id = scroll_layer_id;
-                        info.offset_from_current_layer = Point2D::zero();
-                        info.transform = Matrix4D::identity();
-                        info.perspective = Matrix4D::identity();
                     }
                     (ScrollPolicy::Scrollable, None) => {
                         // Nothing to do - use defaults as set above.

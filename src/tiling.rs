@@ -10,6 +10,7 @@ use fnv::FnvHasher;
 use frame::FrameId;
 use geometry::{rect_intersects_circle, circle_contains_rect};
 use internal_types::{AxisDirection, BoxShadowRasterOp, Glyph, GlyphKey, RasterItem, RectUv};
+use layer::Layer;
 use quadtree::Quadtree;
 use renderer::{BLUR_INFLATION_FACTOR, TEXT_TARGET_SIZE};
 use resource_cache::ResourceCache;
@@ -23,7 +24,7 @@ use texture_cache::{TexturePage};
 use util::{self, RectHelpers, MatrixHelpers, subtract_rect};
 use webrender_traits::{ColorF, FontKey, ImageKey, ImageRendering, ComplexClipRegion};
 use webrender_traits::{BorderDisplayItem, BorderStyle, ItemRange, AuxiliaryLists, BorderRadius};
-use webrender_traits::{BoxShadowClipMode, PipelineId};
+use webrender_traits::{BoxShadowClipMode, PipelineId, ScrollLayerId};
 
 #[derive(Debug, Copy, Clone)]
 enum SplitKind {
@@ -437,8 +438,10 @@ pub struct LayerTemplateIndex(u32);
 pub struct PackedLayer {
     transform: Matrix4D<f32>,
     inv_transform: Matrix4D<f32>,
-    screen_vertices: [Point4D<f32>; 4],
+    //screen_vertices: [Point4D<f32>; 4],
     blend_info: [f32; 4],
+    offset: Point2D<f32>,
+    padding: Point2D<f32>,
 }
 
 #[derive(Debug)]
@@ -498,6 +501,7 @@ struct LayerTemplate {
     device_pixel_ratio: f32,
     index_in_ubo: u32,
     rect: Rect<f32>,
+    scroll_layer_id: ScrollLayerId,
 }
 
 #[repr(u32)]
@@ -1504,20 +1508,18 @@ impl FrameBuilder {
                       transform: Matrix4D<f32>,
                       opacity: f32,
                       pipeline_id: PipelineId,
-                      scroll_offset: Point2D<f32>) {
-        // TODO(gw): Not 3d transform correct!
-        let scroll_transform = transform.translate(scroll_offset.x,
-                                                   scroll_offset.y,
-                                                   0.0);
-
-        let layer_rect = TransformedRect::new(&rect, &transform);
+                      scroll_layer_id: ScrollLayerId,
+                      offset: Point2D<f32>) {
+        //let layer_rect = TransformedRect::new(&rect, &transform);
 
         let template = LayerTemplate {
             packed: PackedLayer {
-                inv_transform: scroll_transform.invert(),
-                transform: scroll_transform,
-                screen_vertices: layer_rect.vertices,
+                inv_transform: transform.invert(),
+                transform: transform,
+                //screen_vertices: layer_rect.vertices,
                 blend_info: [opacity, 0.0, 0.0, 0.0],
+                offset: offset,
+                padding: Point2D::zero(),
             },
             rect: rect,
             primitives: Vec::new(),
@@ -1525,6 +1527,7 @@ impl FrameBuilder {
             pipeline_id: pipeline_id,
             device_pixel_ratio: self.device_pixel_ratio,
             index_in_ubo: 0,
+            scroll_layer_id: scroll_layer_id,
         };
 
         self.layer_stack.push(LayerTemplateIndex(self.layers.len() as u32));
@@ -2106,13 +2109,18 @@ impl FrameBuilder {
     pub fn build(&mut self,
                  resource_cache: &mut ResourceCache,
                  frame_id: FrameId,
-                 pipeline_auxiliary_lists: &HashMap<PipelineId, AuxiliaryLists, BuildHasherDefault<FnvHasher>>) -> Frame {
+                 pipeline_auxiliary_lists: &HashMap<PipelineId, AuxiliaryLists, BuildHasherDefault<FnvHasher>>,
+                 layer_map: &HashMap<ScrollLayerId, Layer, BuildHasherDefault<FnvHasher>>) -> Frame {
         let mut layer_ubo = Ubo::new();
         let mut text_buffer = TextBuffer::new(TEXT_TARGET_SIZE);
         let mut debug_rects = Vec::new();
 
         for (layer_index, layer) in self.layers.iter_mut().enumerate() {
             let layer_index = LayerTemplateIndex(layer_index as u32);
+            let scroll_layer = &layer_map[&layer.scroll_layer_id];
+            let transform = scroll_layer.world_transform.mul(&layer.packed.transform);
+            layer.packed.transform = transform;
+            layer.packed.inv_transform = transform.invert();
             layer.index_in_ubo = layer_ubo.push(&layer.packed);
         }
 

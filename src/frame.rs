@@ -3,24 +3,30 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use app_units::Au;
+use device::{TextureId, TextureFilter};
 use euclid::{Matrix4D, Point2D, Point3D, Point4D, Rect, Size2D};
 use fnv::FnvHasher;
 use geometry::ray_intersects_rect;
-use internal_types::{AxisDirection, LowLevelFilterOp, CompositionOp};
-use internal_types::{RendererFrame};
+use internal_types::{AxisDirection, LowLevelFilterOp, CompositionOp, DrawListItemIndex};
+use internal_types::{ChildLayerIndex, DrawListId};
+use internal_types::{CompositeBatchInfo, CompositeBatchJob};
+use internal_types::{RendererFrame, StackingContextInfo, DrawCall, StackingContextIndex};
 use internal_types::{ANGLE_FLOAT_TO_FIXED, MAX_RECT};
+use internal_types::{ClearInfo, RenderTargetId, DrawListGroupId};
 use layer::{Layer, ScrollingState};
+use renderer::CompositionOpHelpers;
 use resource_cache::ResourceCache;
 use scene::{SceneStackingContext, ScenePipeline, Scene, SceneItem, SpecificSceneItem};
 use scoped_threadpool;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use std::mem;
-use util::{MatrixHelpers};
-use tiling::{Clip, ClipKind, FrameBuilder, FrameBuilderConfig};
-use webrender_traits::{AuxiliaryLists, PipelineId, Epoch, ScrollLayerId};
-use webrender_traits::{StackingContext, FilterOp, MixBlendMode, ScrollPolicy};
-use webrender_traits::{ScrollEventPhase, SpecificDisplayItem, ScrollLayerInfo};
+use texture_cache::TexturePage;
+use tiling::{Clip, ClipKind, FrameBuilder};
+use util::{self, MatrixHelpers};
+use webrender_traits::{AuxiliaryLists, PipelineId, Epoch, ScrollPolicy, ScrollLayerId};
+use webrender_traits::{StackingContext, FilterOp, ImageFormat, MixBlendMode};
+use webrender_traits::{ScrollEventPhase, ScrollLayerInfo, SpecificDisplayItem};
 
 #[cfg(target_os = "macos")]
 const CAN_OVERSCROLL: bool = true;
@@ -35,7 +41,7 @@ struct FlattenContext<'a> {
     resource_cache: &'a mut ResourceCache,
     scene: &'a Scene,
     pipeline_sizes: &'a mut HashMap<PipelineId, Size2D<f32>>,
-    old_scrolling_state: &'a HashMap<ScrollLayerId, ScrollingState, BuildHasherDefault<FnvHasher>>,
+    builder: &'a mut FrameBuilder,
 }
 
 #[derive(Debug)]
@@ -52,15 +58,14 @@ struct FlattenInfo {
     pipeline_id: PipelineId,
 }
 
-pub type LayerMap = HashMap<ScrollLayerId, Layer, BuildHasherDefault<FnvHasher>>;
-
-fn scroll_offset(id: ScrollLayerId,
-                 scroll_states: &HashMap<ScrollLayerId, ScrollingState, BuildHasherDefault<FnvHasher>>) -> Point2D<f32> {
-    match scroll_states.get(&id) {
-        Some(scroll_state) => scroll_state.offset,
-        None => Point2D::zero(),
-    }
+#[derive(Debug)]
+pub enum FrameRenderItem {
+    /// The extra boolean indicates whether a Z-buffer clear is needed.
+    CompositeBatch(CompositeBatchInfo, bool),
+    DrawListBatch(DrawListGroupId),
 }
+
+pub type LayerMap = HashMap<ScrollLayerId, Layer, BuildHasherDefault<FnvHasher>>;
 
 pub struct Frame {
     pub layers: LayerMap,
@@ -70,9 +75,7 @@ pub struct Frame {
                                           BuildHasherDefault<FnvHasher>>,
     pub root_scroll_layer_id: Option<ScrollLayerId>,
     id: FrameId,
-
     debug: bool,
-    viewport_size: Size2D<i32>,
     frame_builder: Option<FrameBuilder>,
 }
 
@@ -201,16 +204,14 @@ impl StackingContextHelpers for StackingContext {
 }
 
 impl Frame {
-    pub fn new(_config: FrameBuilderConfig, debug: bool) -> Frame {
+    pub fn new(debug: bool) -> Frame {
         Frame {
-            layers: HashMap::with_hasher(Default::default()),
             pipeline_epoch_map: HashMap::with_hasher(Default::default()),
             pipeline_auxiliary_lists: HashMap::with_hasher(Default::default()),
+            layers: HashMap::with_hasher(Default::default()),
             root_scroll_layer_id: None,
             id: FrameId(0),
-
             debug: debug,
-            viewport_size: Size2D::zero(),
             frame_builder: None,
         }
     }
@@ -219,6 +220,8 @@ impl Frame {
                  -> HashMap<ScrollLayerId, ScrollingState, BuildHasherDefault<FnvHasher>> {
         self.pipeline_epoch_map.clear();
 
+        // Free any render targets from last frame.
+        // TODO: This should really re-use existing targets here...
         let mut old_layer_scrolling_states = HashMap::with_hasher(Default::default());
         for (layer_id, mut old_layer) in &mut self.layers.drain() {
             old_layer_scrolling_states.insert(layer_id, old_layer.scrolling);
@@ -362,9 +365,6 @@ impl Frame {
 
                 self.pipeline_auxiliary_lists = scene.pipeline_auxiliary_lists.clone();
 
-                self.viewport_size = Size2D::new(root_pipeline.viewport_size.width as i32,
-                                                 root_pipeline.viewport_size.height as i32);
-
                 let root_stacking_context = scene.stacking_context_map
                                                  .get(&root_pipeline.root_stacking_context_id)
                                                  .unwrap();
@@ -387,43 +387,38 @@ impl Frame {
 
                 // Work around borrow check on resource cache
                 {
-                    let mut context = FlattenContext {
-                        resource_cache: resource_cache,
-                        scene: scene,
-                        pipeline_sizes: pipeline_sizes,
-                        old_scrolling_state: &old_layer_scrolling_states,
-                    };
-
-                    let parent_info = FlattenInfo {
-                        viewport_size: root_pipeline.viewport_size,
-                        offset_from_origin: Point2D::zero(),
-                        offset_from_current_layer: Point2D::zero(),
-                        default_scroll_layer_id: root_scroll_layer_id,
-                        actual_scroll_layer_id: root_scroll_layer_id,
-                        fixed_scroll_layer_id: root_fixed_layer_id,
-                        current_clip_rect: MAX_RECT,
-                        transform: Matrix4D::identity(),
-                        perspective: Matrix4D::identity(),
-                        pipeline_id: root_pipeline_id,
-                    };
-
                     let mut frame_builder = FrameBuilder::new(root_pipeline.viewport_size,
                                                               device_pixel_ratio,
                                                               self.debug);
 
-                    frame_builder.push_layer(root_stacking_context.stacking_context.bounds,
-                                             Matrix4D::identity(),
-                                             1.0,
-                                             root_pipeline_id,
-                                             scroll_offset(root_scroll_layer_id, &old_layer_scrolling_states));
+                    {
+                        let mut context = FlattenContext {
+                            resource_cache: resource_cache,
+                            scene: scene,
+                            pipeline_sizes: pipeline_sizes,
+                            builder: &mut frame_builder,
+                        };
 
-                    let root_pipeline = SceneItemKind::Pipeline(root_pipeline);
-                    self.flatten(root_pipeline,
-                                 &parent_info,
-                                 &mut context,
-                                 &mut frame_builder,
-                                 0);
-                    frame_builder.pop_layer();
+                        let parent_info = FlattenInfo {
+                            viewport_size: root_pipeline.viewport_size,
+                            offset_from_origin: Point2D::zero(),
+                            offset_from_current_layer: Point2D::zero(),
+                            default_scroll_layer_id: root_scroll_layer_id,
+                            actual_scroll_layer_id: root_scroll_layer_id,
+                            fixed_scroll_layer_id: root_fixed_layer_id,
+                            current_clip_rect: MAX_RECT,
+                            transform: Matrix4D::identity(),
+                            perspective: Matrix4D::identity(),
+                            pipeline_id: root_pipeline_id,
+                        };
+
+                        let root_pipeline = SceneItemKind::Pipeline(root_pipeline);
+                        self.flatten(root_pipeline,
+                                     &parent_info,
+                                     &mut context,
+                                     0);
+                    }
+
                     self.frame_builder = Some(frame_builder);
                 }
 
@@ -440,16 +435,25 @@ impl Frame {
         }
     }
 
-    fn add_items_to_layer(&mut self,
-                          scene_items: &[SceneItem],
-                          info: &FlattenInfo,
-                          builder: &mut FrameBuilder,
-                          context: &mut FlattenContext,
-                          _level: i32) {
+    fn add_items_to_target(&mut self,
+                           scene_items: &[SceneItem],
+                           info: &FlattenInfo,
+                           context: &mut FlattenContext,
+                           _level: i32,
+                           sc_rect: Rect<f32>,
+                           opacity: f32) {
+        context.builder.push_layer(sc_rect,
+                                   info.transform,
+                                   opacity,
+                                   info.pipeline_id,
+                                   info.actual_scroll_layer_id,
+                                   info.offset_from_current_layer);
+
         for item in scene_items {
             match item.specific {
                 SpecificSceneItem::DrawList(draw_list_id) => {
                     let draw_list = context.resource_cache.get_draw_list(draw_list_id);
+                    let builder = &mut context.builder;
 
                     let auxiliary_lists = {
                         self.pipeline_auxiliary_lists
@@ -519,51 +523,11 @@ impl Frame {
                                                   .get(&id)
                                                   .unwrap();
 
-                    let composition_operations = {
-                        let auxiliary_lists = self.pipeline_auxiliary_lists
-                                                  .get(&pipeline_id)
-                                                  .expect("No auxiliary lists?!");
-                        stacking_context.stacking_context.composition_operations(auxiliary_lists)
-                    };
-
-                    let mut opacity = 1.0;
-                    for composition_op in composition_operations {
-                        match composition_op {
-                            CompositionOp::Filter(filter_op) => {
-                                match filter_op {
-                                    LowLevelFilterOp::Opacity(o) => {
-                                        opacity = o.to_f32_px();
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    let origin = info.offset_from_current_layer + stacking_context.stacking_context.bounds.origin;
-                    let local_transform = Matrix4D::identity().translate(origin.x, origin.y, 0.0)
-                                                             .mul(&stacking_context.stacking_context.transform);
-                                                             //.translate(-origin.x, -origin.y, 0.0);
-
-                    let transform = info.perspective.mul(&info.transform)
-                                                    .mul(&local_transform);
-
-                    builder.push_layer(stacking_context.stacking_context.overflow,
-                                       transform,
-                                       opacity,
-                                       pipeline_id,
-                                       scroll_offset(info.actual_scroll_layer_id,
-                                                     &context.old_scrolling_state));
-
                     let child = SceneItemKind::StackingContext(stacking_context, pipeline_id);
                     self.flatten(child,
                                  info,
                                  context,
-                                 builder,
                                  _level+1);
-
-                    builder.pop_layer();
                 }
                 SpecificSceneItem::Iframe(ref iframe_info) => {
                     let pipeline = context.scene
@@ -592,6 +556,7 @@ impl Frame {
                             perspective: info.perspective,
                             pipeline_id: pipeline.pipeline_id,
                         };
+                        //println!("iframe clip={:?}", iframe_info.current_clip_rect);
 
                         let iframe_stacking_context = context.scene
                                                              .stacking_context_map
@@ -609,38 +574,25 @@ impl Frame {
                                                       iframe_info.transform,
                                                       pipeline.pipeline_id));
 
-                        let local_transform = Matrix4D::identity().translate(layer_origin.x, layer_origin.y, 0.0)
-                                                             .mul(&iframe_stacking_context.stacking_context.transform);
-
-                        let transform = info.perspective.mul(&info.transform)
-                                                        .mul(&local_transform);
-
-                        builder.push_layer(iframe_stacking_context.stacking_context.overflow,
-                                           transform,
-                                           1.0,
-                                           pipeline.pipeline_id,
-                                           scroll_offset(info.actual_scroll_layer_id,
-                                                         context.old_scrolling_state));
-
                         self.flatten(iframe,
                                      &iframe_info,
                                      context,
-                                     builder,
                                      _level+1);
-
-                        builder.pop_layer();
                     }
                 }
             }
         }
+
+        context.builder.pop_layer();
     }
 
     fn flatten(&mut self,
                scene_item: SceneItemKind,
                parent_info: &FlattenInfo,
                context: &mut FlattenContext,
-               builder: &mut FrameBuilder,
                level: i32) {
+        let _pf = util::ProfileScope::new("  flatten");
+
         let (stacking_context, pipeline_id) = match scene_item {
             SceneItemKind::StackingContext(stacking_context, pipeline_id) => {
                 let stacking_context = &stacking_context.stacking_context;
@@ -666,31 +618,35 @@ impl Frame {
                                               .transform_rect(&parent_info.current_clip_rect)
                                               .translate(&-stacking_context.bounds.origin)
                                               .intersection(&stacking_context.overflow);
+        //println!("local_clip_rect={:?}", local_clip_rect);
 
         if let Some(local_clip_rect) = local_clip_rect {
             let scene_items = scene_item.collect_scene_items(&context.scene);
             if !scene_items.is_empty() {
-                //let composition_operations = {
-                //    let auxiliary_lists = self.pipeline_auxiliary_lists
-                //                              .get(&pipeline_id)
-                //                              .expect("No auxiliary lists?!");
-                //    stacking_context.composition_operations(auxiliary_lists)
-                //};
+                let composition_operations = {
+                    let auxiliary_lists = self.pipeline_auxiliary_lists
+                                              .get(&pipeline_id)
+                                              .expect("No auxiliary lists?!");
+                    stacking_context.composition_operations(auxiliary_lists)
+                };
 
                 // Build world space transform
                 let origin = parent_info.offset_from_current_layer + stacking_context.bounds.origin;
-
-                let local_transform = Matrix4D::identity().translate(origin.x, origin.y, 0.0)
-                                                         .mul(&stacking_context.transform);
-                                                         //.translate(-origin.x, -origin.y, 0.0);
+                let local_transform = if composition_operations.is_empty() {
+                    Matrix4D::identity().translate(origin.x, origin.y, 0.0)
+                                        .mul(&stacking_context.transform)
+                                        .translate(-origin.x, -origin.y, 0.0)
+                } else {
+                    Matrix4D::identity()
+                };
 
                 let transform = parent_info.perspective.mul(&parent_info.transform)
                                                        .mul(&local_transform);
 
                 // Build world space perspective transform
                 let perspective = Matrix4D::identity().translate(origin.x, origin.y, 0.0)
-                                                     .mul(&stacking_context.perspective)
-                                                     .translate(-origin.x, -origin.y, 0.0);
+                                                      .mul(&stacking_context.perspective)
+                                                      .translate(-origin.x, -origin.y, 0.0);
 
                 let mut info = FlattenInfo {
                     viewport_size: parent_info.viewport_size,
@@ -699,10 +655,10 @@ impl Frame {
                     default_scroll_layer_id: parent_info.default_scroll_layer_id,
                     actual_scroll_layer_id: parent_info.default_scroll_layer_id,
                     fixed_scroll_layer_id: parent_info.fixed_scroll_layer_id,
-                    pipeline_id: parent_info.pipeline_id,
                     current_clip_rect: local_clip_rect,
                     transform: transform,
                     perspective: perspective,
+                    pipeline_id: parent_info.pipeline_id,
                 };
 
                 match (stacking_context.scroll_policy, stacking_context.scroll_layer_id) {
@@ -729,31 +685,49 @@ impl Frame {
                         self.layers.insert(scroll_layer_id, layer);
                         info.default_scroll_layer_id = scroll_layer_id;
                         info.actual_scroll_layer_id = scroll_layer_id;
+                        info.offset_from_current_layer = Point2D::zero();
+                        info.transform = Matrix4D::identity();
+                        info.perspective = Matrix4D::identity();
                     }
                     (ScrollPolicy::Scrollable, None) => {
                         // Nothing to do - use defaults as set above.
                     }
                 }
 
+                let mut opacity = 1.0;
+                for composition_op in composition_operations {
+                    match composition_op {
+                        CompositionOp::Filter(filter_op) => {
+                            match filter_op {
+                                LowLevelFilterOp::Opacity(o) => {
+                                    opacity = o.to_f32_px();
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
                 // TODO: Account for scroll offset with transforms!
-                self.add_items_to_layer(&scene_items,
-                                        &info,
-                                        builder,
-                                        context,
-                                        level);
+                self.add_items_to_target(&scene_items,
+                                         &info,
+                                         context,
+                                         level,
+                                         stacking_context.overflow,
+                                         opacity);
             }
         }
     }
 
     pub fn build(&mut self,
                  resource_cache: &mut ResourceCache,
-                 _thread_pool: &mut scoped_threadpool::Pool,
-                 _device_pixel_ratio: f32)
+                 thread_pool: &mut scoped_threadpool::Pool,
+                 device_pixel_ratio: f32)
                  -> RendererFrame {
         self.update_layer_transforms();
         let frame = self.build_frame(resource_cache);
         resource_cache.expire_old_resources(self.id);
-
         frame
     }
 
@@ -811,7 +785,8 @@ impl Frame {
         let frame = frame_builder.map(|mut builder| {
             builder.build(resource_cache,
                           self.id,
-                          &self.pipeline_auxiliary_lists)
+                          &self.pipeline_auxiliary_lists,
+                          &self.layers)
         });
 
         let layers_bouncing_back = self.collect_layers_bouncing_back();

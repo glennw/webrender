@@ -443,6 +443,7 @@ impl Frame {
                            sc_rect: Rect<f32>,
                            opacity: f32) {
         context.builder.push_layer(sc_rect,
+                                   info.current_clip_rect,
                                    info.transform,
                                    opacity,
                                    info.pipeline_id,
@@ -514,7 +515,9 @@ impl Frame {
                             }
                         }
 
-                        builder.clear_clip();
+                        if !clips.is_empty() {
+                            builder.clear_clip();
+                        }
                     }
                 }
                 SpecificSceneItem::StackingContext(id, pipeline_id) => {
@@ -542,6 +545,9 @@ impl Frame {
 
                         let iframe_fixed_layer_id = ScrollLayerId::create_fixed(pipeline.pipeline_id);
 
+                        // TODO(gw): Handled by mask regions in WR1 - pcwalton might be working on this so hack for now...
+                        let clip_hack = iframe_info.clip.main.intersection(&Rect::new(Point2D::zero(), iframe_info.bounds.size));
+
                         // TODO(servo/servo#9983, pcwalton): Support rounded rectangle clipping.
                         // Currently we take the main part of the clip rect only.
                         let iframe_info = FlattenInfo {
@@ -551,12 +557,11 @@ impl Frame {
                             default_scroll_layer_id: info.default_scroll_layer_id,
                             actual_scroll_layer_id: info.actual_scroll_layer_id,
                             fixed_scroll_layer_id: iframe_fixed_layer_id,
-                            current_clip_rect: iframe_info.clip.main,
+                            current_clip_rect: clip_hack.unwrap_or(MAX_RECT),
                             transform: info.transform,
                             perspective: info.perspective,
                             pipeline_id: pipeline.pipeline_id,
                         };
-                        //println!("iframe clip={:?}", iframe_info.current_clip_rect);
 
                         let iframe_stacking_context = context.scene
                                                              .stacking_context_map

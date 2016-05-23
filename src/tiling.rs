@@ -502,6 +502,8 @@ struct LayerTemplate {
     index_in_ubo: u32,
     rect: Rect<f32>,
     scroll_layer_id: ScrollLayerId,
+    clips: Vec<Clip>,
+    clip_stack: Vec<ClipIndex>,
 }
 
 #[repr(u32)]
@@ -614,14 +616,18 @@ impl PrimitivePartList {
                  clip: Option<&Clip>) {
         match clip {
             Some(clip) => {
-                let parts = part.clip(clip);
-                for part in parts {
-                    if part.rect.size.width > 0.0 &&
-                       part.rect.size.height > 0.0 {
-                        self.parts.push(part);
-                    } else {
-                        //println!("WARNING: Removed an empty rect {:?} - should be caught higher to avoid redundant work!", part.rect);
+                if clip.affects(&part.rect) {
+                    let parts = part.clip(clip);
+                    for part in parts {
+                        if part.rect.size.width > 0.0 &&
+                           part.rect.size.height > 0.0 {
+                            self.parts.push(part);
+                        } else {
+                            //println!("WARNING: Removed an empty rect {:?} - should be caught higher to avoid redundant work!", part.rect);
+                        }
                     }
+                } else if part.rect.size.width > 0.0 && part.rect.size.height > 0.0 {
+                    self.parts.push(part.clone());
                 }
             }
             None => {
@@ -1273,11 +1279,10 @@ pub struct Clip {
 }
 
 impl Clip {
-    /*
     pub fn get_rect(&self) -> Rect<f32> {
         Rect::new(self.p0, Size2D::new(self.p1.x - self.p0.x,
                                        self.p1.y - self.p0.y))
-    }*/
+    }
 
     pub fn from_clip_region(clip: &ComplexClipRegion, clip_kind: ClipKind) -> Clip {
         Clip {
@@ -1383,13 +1388,12 @@ impl Clip {
         }
     }
 
-/*
     pub fn affects(&self, rect: &Rect<f32>) -> bool {
         let clip_rect = self.get_rect();
 
         // If rect isn't intersecting the clip rect, then it will have no effect.
         if clip_rect.intersects(rect) {
-            if rect_contains_rect(&clip_rect, rect) {
+            if clip_rect.contains_rect(rect) {
                 // If rect intersects with any of the border corner rects, then it will
                 // have an effect (this is a conservative test, but should catch most cases).
                 if self.top_left.rect.intersects(rect) {
@@ -1415,7 +1419,7 @@ impl Clip {
         } else {
             return false
         }
-    }*/
+    }
 }
 
 pub struct FrameBuilderConfig {
@@ -1449,8 +1453,6 @@ pub struct FrameBuilder {
     color_texture_id: TextureId,
     mask_texture_id: TextureId,
     device_pixel_ratio: f32,
-    clips: Vec<Clip>,
-    clip_index: Option<ClipIndex>,
     next_text_run_key: usize,
     debug: bool,
 }
@@ -1467,37 +1469,62 @@ impl FrameBuilder {
             color_texture_id: TextureId(0),
             mask_texture_id: TextureId(0),
             device_pixel_ratio: device_pixel_ratio,
-            clips: Vec::new(),
-            clip_index: None,
             next_text_run_key: 0,
             debug: debug,
         }
     }
 
     pub fn set_clip(&mut self, clip: Clip) {
-        let clip_index = ClipIndex(self.clips.len() as u32);
-        self.clip_index = Some(clip_index);
-        self.clips.push(clip);
+        let current_layer = *self.layer_stack.last().unwrap();
+        let LayerTemplateIndex(layer_index) = current_layer;
+        let layer = &mut self.layers[layer_index as usize];
+
+        let clip_index = ClipIndex(layer.clips.len() as u32);
+        // TODO(gw): Handle intersecting clips!
+        /*
+        let clip = match layer.clip_stack.last() {
+            Some(prev_clip_index) => {
+                let prev_clip = &layer.clips[prev_clip_index];
+                prev_clip.
+            }
+            None => {
+                clip
+            }
+        };
+        */
+        layer.clips.push(clip);
+        layer.clip_stack.push(clip_index);
     }
 
     pub fn clear_clip(&mut self) {
-        self.clip_index = None;
+        let current_layer = *self.layer_stack.last().unwrap();
+        let LayerTemplateIndex(layer_index) = current_layer;
+        let layer = &mut self.layers[layer_index as usize];
+        layer.clip_stack.pop().unwrap();
     }
 
     pub fn push_layer(&mut self,
                       rect: Rect<f32>,
+                      clip_rect: Rect<f32>,
                       transform: Matrix4D<f32>,
                       opacity: f32,
                       pipeline_id: PipelineId,
                       scroll_layer_id: ScrollLayerId,
                       offset: Point2D<f32>) {
-        //let layer_rect = TransformedRect::new(&rect, &transform);
+        let mut clips = Vec::new();
+        let mut clip_stack = Vec::new();
+
+        let clip = Clip::from_rect(&clip_rect, ClipKind::ClipOut);
+        if clip.affects(&rect) {
+            let clip_index = clips.len();
+            clips.push(clip);
+            clip_stack.push(ClipIndex(clip_index as u32));
+        }
 
         let template = LayerTemplate {
             packed: PackedLayer {
                 inv_transform: transform.invert(),
                 transform: transform,
-                //screen_vertices: layer_rect.vertices,
                 blend_info: [opacity, 0.0, 0.0, 0.0],
                 offset: offset,
                 padding: Point2D::zero(),
@@ -1509,6 +1536,8 @@ impl FrameBuilder {
             device_pixel_ratio: self.device_pixel_ratio,
             index_in_ubo: 0,
             scroll_layer_id: scroll_layer_id,
+            clips: clips,
+            clip_stack: clip_stack,
         };
 
         self.layer_stack.push(LayerTemplateIndex(self.layers.len() as u32));
@@ -1598,13 +1627,12 @@ impl FrameBuilder {
     fn add_primitive(&mut self,
                      rect: &Rect<f32>,
                      details: PrimitiveDetails) {
-//        let _pf = hprof::enter("add_primitive");
         let current_layer = *self.layer_stack.last().unwrap();
         let LayerTemplateIndex(layer_index) = current_layer;
         let layer = &mut self.layers[layer_index as usize];
         let prim = Primitive {
             rect: *rect,
-            clip: self.clip_index,
+            clip: layer.clip_stack.last().map(|index| *index),
             details: details,
         };
         let prim_index = layer.primitives.len();
@@ -1730,7 +1758,7 @@ impl FrameBuilder {
 
             let clip = prim.clip.map(|ci| {
                 let ClipIndex(ci) = ci;
-                &self.clips[ci as usize]
+                &layer.clips[ci as usize]
             });
 
             match prim.details {

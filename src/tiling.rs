@@ -926,38 +926,23 @@ impl PrimitivePart {
                                                       p1.y - r);
 
                     if let Some(rect) = self.rect.intersection(&inner_top) {
-                        parts.push(PrimitivePart::solid(rect.origin,
-                                                        rect.size,
-                                                        self.color0,
-                                                        None));
+                        parts.push(self.interp(&rect));
                     }
 
                     if let Some(rect) = self.rect.intersection(&inner_left) {
-                        parts.push(PrimitivePart::solid(rect.origin,
-                                                        rect.size,
-                                                        self.color0,
-                                                        None));
+                        parts.push(self.interp(&rect));
                     }
 
                     if let Some(rect) = self.rect.intersection(&inner_right) {
-                        parts.push(PrimitivePart::solid(rect.origin,
-                                                        rect.size,
-                                                        self.color0,
-                                                        None));
+                        parts.push(self.interp(&rect));
                     }
 
                     if let Some(rect) = self.rect.intersection(&inner_bottom) {
-                        parts.push(PrimitivePart::solid(rect.origin,
-                                                        rect.size,
-                                                        self.color0,
-                                                        None));
+                        parts.push(self.interp(&rect));
                     }
 
                     if let Some(rect) = self.rect.intersection(&inner_mid) {
-                        parts.push(PrimitivePart::solid(rect.origin,
-                                                        rect.size,
-                                                        self.color0,
-                                                        None));
+                        parts.push(self.interp(&rect));
                     }
 
                     if let Some(rect) = self.rect.intersection(&clip.top_left.rect) {
@@ -965,10 +950,9 @@ impl PrimitivePart {
                                                       Point2D::zero(),
                                                       Point2D::new(clip.top_left.outer_radius_x, clip.top_left.outer_radius_y),
                                                       Point2D::new(clip.top_left.inner_radius_x, clip.top_left.inner_radius_y));
-                        parts.push(PrimitivePart::solid(rect.origin,
-                                                        rect.size,
-                                                        self.color0,
-                                                        Some(clip_info)));
+                        let mut clipped_part = self.interp(&rect);
+                        clipped_part.clip_info = clip_info;
+                        parts.push(clipped_part);
                     }
 
                     if let Some(rect) = self.rect.intersection(&clip.top_right.rect) {
@@ -976,10 +960,9 @@ impl PrimitivePart {
                                                       Point2D::zero(),
                                                       Point2D::new(clip.top_right.outer_radius_x, clip.top_right.outer_radius_y),
                                                       Point2D::new(clip.top_right.inner_radius_x, clip.top_right.inner_radius_y));
-                        parts.push(PrimitivePart::solid(rect.origin,
-                                                        rect.size,
-                                                        self.color0,
-                                                        Some(clip_info)));
+                        let mut clipped_part = self.interp(&rect);
+                        clipped_part.clip_info = clip_info;
+                        parts.push(clipped_part);
                     }
 
                     if let Some(rect) = self.rect.intersection(&clip.bottom_left.rect) {
@@ -987,10 +970,9 @@ impl PrimitivePart {
                                                       Point2D::zero(),
                                                       Point2D::new(clip.bottom_left.outer_radius_x, clip.bottom_left.outer_radius_y),
                                                       Point2D::new(clip.bottom_left.inner_radius_x, clip.bottom_left.inner_radius_y));
-                        parts.push(PrimitivePart::solid(rect.origin,
-                                                        rect.size,
-                                                        self.color0,
-                                                        Some(clip_info)));
+                        let mut clipped_part = self.interp(&rect);
+                        clipped_part.clip_info = clip_info;
+                        parts.push(clipped_part);
                     }
 
                     if let Some(rect) = self.rect.intersection(&clip.bottom_right.rect) {
@@ -998,10 +980,9 @@ impl PrimitivePart {
                                                       Point2D::zero(),
                                                       Point2D::new(clip.bottom_right.outer_radius_x, clip.bottom_right.outer_radius_y),
                                                       Point2D::new(clip.bottom_right.inner_radius_x, clip.bottom_right.inner_radius_y));
-                        parts.push(PrimitivePart::solid(rect.origin,
-                                                        rect.size,
-                                                        self.color0,
-                                                        Some(clip_info)));
+                        let mut clipped_part = self.interp(&rect);
+                        clipped_part.clip_info = clip_info;
+                        parts.push(clipped_part);
                     }
                 }
             }

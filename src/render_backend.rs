@@ -3,8 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use euclid::Matrix4D;
 use frame::Frame;
-//use hprof;
 use internal_types::{FontTemplate, ResultMsg, RendererFrame};
 use ipc_channel::ipc::{IpcBytesReceiver, IpcBytesSender, IpcReceiver};
 use profiler::BackendProfileCounters;
@@ -240,7 +240,6 @@ impl RenderBackend {
                         ApiMsg::TranslatePointToLayerSpace(point, tx) => {
                             // First, find the specific layer that contains the point.
                             let point = point / self.device_pixel_ratio;
-                            /*
                             if let (Some(root_pipeline_id), Some(root_scroll_layer_id)) =
                                     (self.scene.root_pipeline_id,
                                      self.frame.root_scroll_layer_id) {
@@ -267,7 +266,7 @@ impl RenderBackend {
                                         }
                                     }
                                 }
-                            }*/
+                            }
                             tx.send((point, PipelineId(0, 0))).unwrap()
                         }
                         ApiMsg::RequestWebGLContext(size, attributes, tx) => {

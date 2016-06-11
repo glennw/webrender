@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#![feature(step_by)]
 //#![feature(mpsc_select)]
 
 #[macro_use]
@@ -12,6 +13,7 @@ extern crate log;
 mod aabbtree;
 mod batch;
 mod batch_builder;
+mod bsptree;
 mod debug_font_data;
 mod debug_render;
 mod device;
@@ -20,15 +22,15 @@ mod freelist;
 mod geometry;
 mod internal_types;
 mod layer;
-mod node_compiler;
 mod profiler;
+mod quadtree;
 mod render_backend;
 mod resource_cache;
 mod resource_list;
 mod scene;
 mod spring;
-mod tessellator;
 mod texture_cache;
+mod tiling;
 mod util;
 
 mod platform {
@@ -61,6 +63,7 @@ extern crate app_units;
 extern crate euclid;
 extern crate fnv;
 extern crate gleam;
+//extern crate hprof;
 extern crate ipc_channel;
 extern crate num_traits;
 //extern crate notify;

@@ -4,7 +4,7 @@
 
 use app_units::{Au};
 use batch_builder::{BorderSideHelpers, BoxShadowMetrics};
-use bsptree::BspTree;
+use bsp_tiling_strategy::BspTilingStrategy;
 use device::{TextureId, TextureFilter};
 use euclid::{Point2D, Rect, Matrix4D, Size2D, Point4D};
 use fnv::FnvHasher;
@@ -27,6 +27,22 @@ use webrender_traits::{BoxShadowClipMode, PipelineId, ScrollLayerId};
 
 const INVALID_LAYER_INDEX: u32 = 0xffffffff;
 
+pub enum BuiltTile<'a> {
+    Tile(&'a mut Vec<RenderableInstanceId>),
+    Error,
+}
+
+pub trait TilingStrategy {
+    fn add_renderables(&mut self, rlist: &RenderableList);
+    fn region_count(&mut self) -> usize;
+    fn get_tile_range(&self, rect: &Rect<DevicePixel>) -> TileRange;
+    fn build_and_process_tiles<F>(&mut self, region_index: usize, iteration_function: F)
+                                  where F: for<'a> FnMut(Rect<DevicePixel>,
+                                                         BuiltTile<'a>,
+                                                         &'a mut Vec<RenderableId>);
+    fn instances(&mut self, region_index: usize) -> &mut Vec<RenderableId>;
+}
+
 fn project_point(point: Point2D<f32>,
                  transform: &Matrix4D<f32>,
                  device_pixel_ratio: f32) -> Point2D<DevicePixel> {
@@ -43,45 +59,15 @@ fn project_point(point: Point2D<f32>,
 }
 
 #[derive(Debug)]
-struct TilingInfo {
-    x_tile_count: i32,
-    y_tile_count: i32,
-    x_tile_size: DevicePixel,
-    y_tile_size: DevicePixel,
-}
-
-impl TilingInfo {
-    #[inline(always)]
-    fn get_tile_range(&self, rect: &Rect<DevicePixel>) -> TileRange {
-        let px0 = rect.origin.x;
-        let py0 = rect.origin.y;
-        let px1 = rect.origin.x + rect.size.width;
-        let py1 = rect.origin.y + rect.size.height;
-
-        let tx0 = px0.0 / self.x_tile_size.0;
-        let ty0 = py0.0 / self.y_tile_size.0;
-        let tx1 = (px1.0 + self.x_tile_size.0 - 1) / self.x_tile_size.0;
-        let ty1 = (py1.0 + self.y_tile_size.0 - 1) / self.y_tile_size.0;
-
-        let tx0 = cmp::max(0, cmp::min(tx0, self.x_tile_count));
-        let ty0 = cmp::max(0, cmp::min(ty0, self.y_tile_count));
-        let tx1 = cmp::max(0, cmp::min(tx1, self.x_tile_count));
-        let ty1 = cmp::max(0, cmp::min(ty1, self.y_tile_count));
-
-        TileRange::new(tx0, ty0, tx1, ty1)
-    }
-}
-
-#[derive(Debug)]
-struct TileRange {
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
+pub struct TileRange {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
 }
 
 impl TileRange {
-    fn new(x0: i32, y0: i32, x1: i32, y1: i32) -> TileRange {
+    pub fn new(x0: i32, y0: i32, x1: i32, y1: i32) -> TileRange {
         TileRange {
             x0: x0,
             y0: y0,
@@ -111,10 +97,10 @@ struct ClipIndex(u32);
 struct PrimitiveId(usize);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct RenderableId(u32);
+pub struct RenderableId(pub u32);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct RenderableInstanceId(u32);
+pub struct RenderableInstanceId(pub u32);
 
 #[derive(Clone, Debug)]
 pub struct PackedLayer {
@@ -281,7 +267,6 @@ impl Primitive {
     fn build_renderables(&self,
                          layer_index: RenderLayerIndex,
                          prim_index: PrimitiveIndex,
-                         tile_info: &TilingInfo,
                          device_pixel_ratio: f32,
                          renderables: &mut RenderableList,
                          auxiliary_lists: &AuxiliaryLists,
@@ -794,8 +779,8 @@ enum CacheSize {
 }
 
 #[derive(Debug)]
-struct Renderable {
-    bounding_rect: Rect<DevicePixel>,
+pub struct Renderable {
+    pub bounding_rect: Rect<DevicePixel>,
     layer_index: RenderLayerIndex,
     is_opaque: bool,
     texture_id: TextureId,
@@ -811,8 +796,8 @@ struct Renderable {
 }
 
 #[derive(Debug)]
-struct RenderableList {
-    renderables: Vec<Renderable>,
+pub struct RenderableList {
+    pub renderables: Vec<Renderable>,
 }
 
 impl RenderableList {
@@ -1850,43 +1835,6 @@ impl Pass {
     }
 }
 
-pub struct Tile {
-    bsp_tree: BspTree<RenderableInstanceId>,
-    pub batches: HashMap<BatchKey, Vec<CompositeTile>, BuildHasherDefault<FnvHasher>>,
-    rect: Rect<DevicePixel>,
-
-    instances: Vec<RenderableId>,
-    debug_rects: Vec<DebugRect>,
-    error_tiles: Vec<ErrorTile>,
-    clear_tiles: Vec<ClearTile>,
-}
-
-impl Tile {
-    fn new(x0: DevicePixel,
-           y0: DevicePixel,
-           x1: DevicePixel,
-           y1: DevicePixel) -> Tile {
-        let tile_rect = rect_from_points(x0, y0, x1, y1);
-        Tile {
-            rect: tile_rect,
-            batches: HashMap::with_hasher(Default::default()),
-            bsp_tree: BspTree::new(tile_rect),
-            debug_rects: Vec::new(),
-            error_tiles: Vec::new(),
-            clear_tiles: Vec::new(),
-            instances: Vec::new(),
-        }
-    }
-
-    pub fn add(&mut self,
-               bounding_rect: &Rect<DevicePixel>,
-               id: RenderableId) {
-        let instance_id = RenderableInstanceId(self.instances.len() as u32);
-        self.instances.push(id);
-        self.bsp_tree.add(bounding_rect, instance_id);
-    }
-}
-
 pub struct Frame {
     pub viewport_size: Size2D<u32>,
     pub layer_ubo: Ubo<PackedLayer>, // TODO(gw): Handle batching this, in crazy case where layer count > ubo size!
@@ -2234,18 +2182,25 @@ impl FrameBuilder {
         resource_cache.add_resource_list(&resource_list, frame_id);
         resource_cache.raster_pending_glyphs(frame_id);
 
-        let x_tile_size = DevicePixel(512);
-        let y_tile_size = DevicePixel(512);
-        let x_tile_count = (screen_rect.size.width + x_tile_size - DevicePixel(1)).0 / x_tile_size.0;
-        let y_tile_count = (screen_rect.size.height + y_tile_size - DevicePixel(1)).0 / y_tile_size.0;
+        let tiling_strategy = BspTilingStrategy::new(&screen_rect, self.device_pixel_ratio);
+        self.create_frame_with_tiling_strategy(resource_cache,
+                                               frame_id,
+                                               pipeline_auxiliary_lists,
+                                               layer_ubo,
+                                               tiling_strategy)
+    }
 
-        let tile_info = TilingInfo {
-           x_tile_count: x_tile_count,
-           y_tile_count: y_tile_count,
-           x_tile_size: x_tile_size,
-           y_tile_size: y_tile_size,
-        };
-
+    fn create_frame_with_tiling_strategy<S>(&mut self,
+                                            resource_cache: &mut ResourceCache,
+                                            frame_id: FrameId,
+                                            pipeline_auxiliary_lists:
+                                                &HashMap<PipelineId,
+                                                         AuxiliaryLists,
+                                                         BuildHasherDefault<FnvHasher>>,
+                                            layer_ubo: Ubo<PackedLayer>,
+                                            mut tile_strategy: S)
+                                            -> Frame
+                                            where S: TilingStrategy {
         // Compile visible primitives to renderables
         let mut rlist = RenderableList::new();
         for (layer_index, layer) in self.layers.iter().enumerate() {
@@ -2268,7 +2223,6 @@ impl FrameBuilder {
 
                     prim.build_renderables(layer_index,
                                            prim_index,
-                                           &tile_info,
                                            self.device_pixel_ratio,
                                            &mut rlist,
                                            auxiliary_lists,
@@ -2280,40 +2234,19 @@ impl FrameBuilder {
             }
         }
 
-        // Build screen space tiles, which are individual BSP trees.
-        let mut tiles = Vec::new();
-        for y in 0..y_tile_count {
-            let y0 = DevicePixel(y * y_tile_size.0);
-            let y1 = y0 + y_tile_size;
+        // Build screen space tiles.
+        tile_strategy.add_renderables(&rlist);
 
-            for x in 0..x_tile_count {
-                let x0 = DevicePixel(x * x_tile_size.0);
-                let x1 = x0 + x_tile_size;
+        let mut region_debug_rects = vec![];
+        let mut region_error_tiles = vec![];
+        let mut region_clear_tiles = vec![];
+        let mut region_batches = vec![];
+        let region_count = tile_strategy.region_count();
+        for region_index in 0..region_count {
+            let mut debug_rects = vec![];
+            let mut error_tiles = vec![];
+            let mut clear_tiles = vec![];
 
-                tiles.push(Tile::new(x0, y0, x1, y1));
-            }
-        }
-
-        // Add each of the visible primitives to each BSP tile that it touches.
-        for (renderable_index, renderable) in rlist.renderables.iter().enumerate() {
-            let renderable_id = RenderableId(renderable_index as u32);
-            let tile_range = tile_info.get_tile_range(&renderable.bounding_rect);
-
-            for y in tile_range.y0..tile_range.y1 {
-                for x in tile_range.x0..tile_range.x1 {
-                    let tile = &mut tiles[(y*x_tile_count+x) as usize];
-                    tile.add(&renderable.bounding_rect, renderable_id);
-                }
-            }
-        }
-
-        for tile in &mut tiles {
-            let debug_rects = &mut tile.debug_rects;
-            let error_tiles = &mut tile.error_tiles;
-            let clear_tiles = &mut tile.clear_tiles;
-            let bsp_tree = &mut tile.bsp_tree;
-            let batches = &mut tile.batches;
-            let instances = &mut tile.instances;
             let mut samplers = [
                 TextureId(0),
                 TextureId(0),
@@ -2324,6 +2257,7 @@ impl FrameBuilder {
                 TextureId(0),
                 TextureId(0),
             ];
+            let mut batches = HashMap::with_hasher(Default::default());
 
 /*
             if self.debug {
@@ -2337,14 +2271,20 @@ impl FrameBuilder {
             }
 */
 
-            bsp_tree.split(self.device_pixel_ratio, &mut |rect, cover_indices, partial_indices| {
-                if cover_indices.is_empty() && partial_indices.is_empty() {
+            tile_strategy.build_and_process_tiles(region_index, |rect, built_tile, instances| {
+                let cover_indices = match built_tile {
+                    BuiltTile::Tile(cover_indices) => cover_indices,
+                    BuiltTile::Error => return,
+                };
+
+                if cover_indices.is_empty() {
                     clear_tiles.push(ClearTile {
-                        rect: *rect,
+                        rect: rect,
                     });
                     return;
                 }
 
+                /*
                 if !partial_indices.is_empty() {
                     error_tiles.push(ErrorTile {
                         rect: *rect,
@@ -2354,14 +2294,14 @@ impl FrameBuilder {
 
                 cover_indices.sort_by(|a, b| {
                     b.cmp(&a)
-                });
+                });*/
 
                 if self.debug {
                     let color = ColorF::new(1.0, 0.0, 0.0, 1.0);
                     let debug_rect = DebugRect {
                         label: format!("{}", cover_indices.len()),
                         color: color,
-                        rect: *rect,
+                        rect: rect,
                     };
                     debug_rects.push(debug_rect);
                 }
@@ -2404,12 +2344,12 @@ impl FrameBuilder {
 
                 if cover_indices.len() > MAX_PRIMS_PER_COMPOSITE {
                     error_tiles.push(ErrorTile {
-                        rect: *rect,
+                        rect: rect,
                     });
                     return;
                 }
 
-                let mut composite_tile = CompositeTile::new(rect);
+                let mut composite_tile = CompositeTile::new(&rect);
                 let mut next_prim_index = 0;
 
                 for instance_index in cover_indices.iter().rev() {
@@ -2447,6 +2387,10 @@ impl FrameBuilder {
                 });
                 batch.push(composite_tile);
             });
+            region_clear_tiles.push(clear_tiles);
+            region_error_tiles.push(error_tiles);
+            region_debug_rects.push(debug_rects);
+            region_batches.push(batches);
         }
 
         // Step through each tile and allocate renderable instance jobs as required!
@@ -2454,21 +2398,20 @@ impl FrameBuilder {
         // since the main splitting and job ubo creation can be passed to worker threads!
         let mut passes = vec![Pass::new()];
         let mut prim_cache = PrimitiveCache::new(DevicePixel(2048));
-        for tile in &mut tiles {
-            if tile.instances.is_empty() {
-                continue;
+        for region_index in 0..region_count {
+            let instances = tile_strategy.instances(region_index);
+            if instances.is_empty() {
+                continue
             }
 
-            let render_jobs = prim_cache.allocate(&mut tile.instances,
-                                                  &mut rlist.renderables);
+            let render_jobs = prim_cache.allocate(instances, &mut rlist.renderables);
 
             let render_jobs = match render_jobs {
                 Some(render_jobs) => render_jobs,
                 None => {
                     prim_cache.clear();
                     passes.push(Pass::new());
-                    prim_cache.allocate(&mut tile.instances,
-                                        &mut rlist.renderables)
+                    prim_cache.allocate(instances, &mut rlist.renderables)
                               .expect("TODO Handle edge case failure to fit a single tile in cache!")
                 }
             };
@@ -2486,7 +2429,7 @@ impl FrameBuilder {
                                      self.device_pixel_ratio);
             }
 
-            for instance in &tile.instances {
+            for instance in instances {
                 let RenderableId(i) = *instance;
                 prim_ubo.push(CompositePrimitive::new(&rlist.renderables[i as usize]));
             }
@@ -2496,19 +2439,25 @@ impl FrameBuilder {
 
             let mut tile_batch = TileBatch::new();
             tile_batch.primitives = prim_ubo;
-            tile_batch.batches = tile.batches.clone();      // TODO(gw): perf warning - remove clone here!
+            // TODO(gw): perf warning: remove clone
+            tile_batch.batches = region_batches[region_index].clone();
 
             pass.tile_batches.push(tile_batch);
         }
 
-        let mut debug_rects = Vec::new();
-        let mut clear_tiles = Vec::new();
-        let mut error_tiles = Vec::new();
+        let mut debug_rects = vec![];
+        for region_debug_rects in region_debug_rects {
+            debug_rects.extend(region_debug_rects.into_iter())
+        }
 
-        for tile in tiles {
-            debug_rects.extend_from_slice(&tile.debug_rects);
-            clear_tiles.extend_from_slice(&tile.clear_tiles);
-            error_tiles.extend_from_slice(&tile.error_tiles);
+        let mut clear_tiles = vec![];
+        for region_clear_tiles in region_clear_tiles {
+            clear_tiles.extend(region_clear_tiles.into_iter())
+        }
+
+        let mut error_tiles = vec![];
+        for region_error_tiles in region_error_tiles {
+            error_tiles.extend(region_error_tiles.into_iter())
         }
 
         Frame {

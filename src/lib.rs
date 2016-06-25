@@ -13,6 +13,7 @@ extern crate log;
 mod aabbtree;
 mod batch;
 mod batch_builder;
+mod bsp_tiling_strategy;
 mod bsptree;
 mod debug_font_data;
 mod debug_render;

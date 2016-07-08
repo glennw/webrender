@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use texture_cache::{BorderType, TextureCache, TextureInsertOp};
-use tiling::{Frame, FrameBuilderConfig, Pass};
+use tiling::{Frame, FrameBuilderConfig, RenderPhase, PrimitiveBatchData, RenderTarget};//, ScreenPass, ScreenPassPhase, PrimitiveBatch};
 use time::precise_time_ns;
 use webrender_traits::{ColorF, Epoch, PipelineId, RenderNotifier};
 use webrender_traits::{ImageFormat, MixBlendMode, RenderApiSender};
@@ -39,10 +39,11 @@ pub const MAX_RASTER_OP_SIZE: u32 = 2048;
 // TODO(gw): HACK! Need to support lighten/darken mix-blend-mode properly on android...
 const UBO_BIND_PRIMITIVES: u32 = 1;
 const UBO_BIND_LAYERS: u32 = 2;
+const UBO_BIND_LAYER_TILES: u32 = 3;
 const UBO_BIND_TILES: u32 = 4;
-
 const UBO_BIND_CACHE_ITEMS: u32 = 5;
 const UBO_BIND_COMPOSITE_TILES: u32 = 6;
+const UBO_BIND_RENDERABLES: u32 = 7;
 
 #[derive(Clone, Copy)]
 struct VertexBuffer {
@@ -97,13 +98,27 @@ fn create_composite_shader(name: &'static str, device: &mut Device) -> ProgramId
     let tiles_index = gl::get_uniform_block_index(program_id.0, "Tiles");
     gl::uniform_block_binding(program_id.0, tiles_index, UBO_BIND_COMPOSITE_TILES);
 
+    let renderable_index = gl::get_uniform_block_index(program_id.0, "Renderables");
+    gl::uniform_block_binding(program_id.0, renderable_index, UBO_BIND_RENDERABLES);
+
+    println!("CompositeShader {}: tiles={} ren={}", name, tiles_index, renderable_index);
+
+    program_id
+}
+
+fn create_prim_shader(name: &'static str, device: &mut Device) -> ProgramId {
+    let program_id = device.create_program(name, "prim_shared");
+
+    let tiles_index = gl::get_uniform_block_index(program_id.0, "Tiles");
+    gl::uniform_block_binding(program_id.0, tiles_index, UBO_BIND_TILES);
+
     let layer_index = gl::get_uniform_block_index(program_id.0, "Layers");
     gl::uniform_block_binding(program_id.0, layer_index, UBO_BIND_LAYERS);
 
-    let prim_index = gl::get_uniform_block_index(program_id.0, "Primitives");
-    gl::uniform_block_binding(program_id.0, prim_index, UBO_BIND_PRIMITIVES);
+    let item_index = gl::get_uniform_block_index(program_id.0, "Items");
+    gl::uniform_block_binding(program_id.0, item_index, UBO_BIND_CACHE_ITEMS);
 
-    println!("CompositeShader {}: tiles={} layers={} prims={}", name, tiles_index, layer_index, prim_index);
+    println!("PrimShader {}: items={} tiles={} layers={}", name, item_index, tiles_index, layer_index);
 
     program_id
 }
@@ -148,16 +163,16 @@ pub struct Renderer {
     blur_program_id: ProgramId,
     u_direction: UniformLocation,
 
-    cs_border: ProgramId,
-    cs_rectangle: ProgramId,
-    cs_box_shadow: ProgramId,
-    cs_complex: ProgramId,
-    cs_text: ProgramId,
-    cs_gradient: ProgramId,
+    ps_rectangle: ProgramId,
+    ps_text: ProgramId,
+    ps_image: ProgramId,
+    ps_border: ProgramId,
+    ps_box_shadow: ProgramId,
+    //ps_gradient: ProgramId,
 
     composite_shaders: [ProgramId; 8],
-    tile_error_shader: ProgramId,
     tile_clear_shader: ProgramId,
+    tile_error_shader: ProgramId,
 
     notifier: Arc<Mutex<Option<Box<RenderNotifier>>>>,
 
@@ -172,7 +187,8 @@ pub struct Renderer {
     max_raster_op_size: u32,
     raster_op_target_a8: TextureId,
     raster_op_target_rgba8: TextureId,
-    text_composite_target: TextureId,
+    //text_composite_target: TextureId,
+    render_targets: [TextureId; 2],
 
     gpu_profile_paint: GpuProfile,
     gpu_profile_composite: GpuProfile,
@@ -201,15 +217,15 @@ impl Renderer {
         let blur_program_id = device.create_program("blur", "shared_other");
         let max_raster_op_size = MAX_RASTER_OP_SIZE * options.device_pixel_ratio as u32;
 
-        let cs_text = create_cache_shader("cs_text", &mut device);
-        let cs_rectangle = create_cache_shader("cs_rectangle", &mut device);
-        let cs_box_shadow = create_cache_shader("cs_box_shadow", &mut device);
-        let cs_complex = create_cache_shader("cs_complex", &mut device);
-        let cs_border = create_cache_shader("cs_border", &mut device);
-        let cs_gradient = create_cache_shader("cs_gradient", &mut device);
+        let ps_rectangle = create_prim_shader("ps_rectangle", &mut device);
+        let ps_text = create_prim_shader("ps_text", &mut device);
+        let ps_image = create_prim_shader("ps_image", &mut device);
+        let ps_border = create_prim_shader("ps_border", &mut device);
+        let ps_box_shadow = create_prim_shader("ps_box_shadow", &mut device);
+        //let ps_gradient = create_prim_shader("ps_gradient", &mut device);
 
-        let tile_error_shader = create_special_shader("ps_error", &mut device);
         let tile_clear_shader = create_special_shader("ps_clear", &mut device);
+        let tile_error_shader = create_special_shader("ps_error", &mut device);
 
         let composite_shaders: [ProgramId; 8] = [
             create_composite_shader("cs_p1", &mut device),
@@ -220,6 +236,15 @@ impl Renderer {
             create_composite_shader("cs_p6", &mut device),
             create_composite_shader("cs_p7", &mut device),
             create_composite_shader("cs_p8", &mut device),
+
+            //create_composite_shader("cs_p1_partial", &mut device),
+            //create_composite_shader("cs_p2_partial", &mut device),
+            //create_composite_shader("cs_p3_partial", &mut device),
+            //create_composite_shader("cs_p4_partial", &mut device),
+            //create_composite_shader("cs_p5_partial", &mut device),
+            //create_composite_shader("cs_p6_partial", &mut device),
+            //create_composite_shader("cs_p7_partial", &mut device),
+            //create_composite_shader("cs_p8_partial", &mut device),
         ];
 
         let texture_ids = device.create_texture_ids(1024);
@@ -344,14 +369,14 @@ impl Renderer {
             device_pixel_ratio: options.device_pixel_ratio,
             box_shadow_program_id: box_shadow_program_id,
             blur_program_id: blur_program_id,
-            tile_error_shader: tile_error_shader,
             tile_clear_shader: tile_clear_shader,
-            cs_rectangle: cs_rectangle,
-            cs_box_shadow: cs_box_shadow,
-            cs_complex: cs_complex,
-            cs_border: cs_border,
-            cs_gradient: cs_gradient,
-            cs_text: cs_text,
+            tile_error_shader: tile_error_shader,
+            ps_rectangle: ps_rectangle,
+            ps_text: ps_text,
+            ps_image: ps_image,
+            ps_border: ps_border,
+            ps_box_shadow: ps_box_shadow,
+            //ps_gradient: ps_gradient,
             composite_shaders: composite_shaders,
             u_direction: UniformLocation::invalid(),
             notifier: notifier,
@@ -364,7 +389,8 @@ impl Renderer {
             last_time: 0,
             raster_op_target_a8: raster_op_target_a8,
             raster_op_target_rgba8: raster_op_target_rgba8,
-            text_composite_target: TextureId(0),
+            //text_composite_target: TextureId(0),
+            render_targets: [TextureId(0), TextureId(0)],
             max_raster_op_size: max_raster_op_size,
             gpu_profile_paint: GpuProfile::new(),
             gpu_profile_composite: GpuProfile::new(),
@@ -1079,6 +1105,7 @@ impl Renderer {
         }
     }*/
 
+/*
     fn draw_prim_cache_pass(&mut self,
                             render_pass: &Pass,
                             target_size: &Size2D<f32>) {
@@ -1216,6 +1243,90 @@ impl Renderer {
         }
     }
 
+    fn draw_cache_pass(&mut self,
+                       pass: &TilingPass,
+                       target_size: &Size2D<f32>) {
+        self.device.bind_render_target(Some(self.text_composite_target));
+        gl::viewport(0,
+                     0,
+                     target_size.width as i32,
+                     target_size.height as i32);
+
+        gl::clear_color(1.0, 1.0, 1.0, 0.0);
+        gl::clear(gl::COLOR_BUFFER_BIT);
+        gl::enable(gl::BLEND);
+        gl::blend_func(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        gl::blend_equation(gl::FUNC_ADD);
+
+        let projection = Matrix4D::ortho(0.0,
+                                         target_size.width,
+                                         0.0,
+                                         target_size.height,
+                                         ORTHO_NEAR_PLANE,
+                                         ORTHO_FAR_PLANE);
+
+        for batch in &pass.render_batches {
+            match batch {
+                &PrimitiveBatch::Rectangles(ref ubo_data) => {
+                    self.device.bind_program(self.ps_rectangle, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatch::Borders(ref ubo_data) => {
+                    self.device.bind_program(self.ps_border, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatch::BoxShadows(ref ubo_data) => {
+                    self.device.bind_program(self.ps_box_shadow, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+            }
+        }
+
+        gl::disable(gl::BLEND);
+    }*/
+
     fn add_debug_rect(&mut self,
                       p0: Point2D<DevicePixel>,
                       p1: Point2D<DevicePixel>,
@@ -1260,118 +1371,79 @@ impl Renderer {
         }
     }
 
-    fn draw_tile_frame(&mut self,
-                       frame: &Frame,
-                       framebuffer_size: &Size2D<u32>) {
-        //println!("render {} debug rects", frame.debug_rects.len());
+    fn draw_target(&mut self,
+                   render_target: Option<TextureId>,
+                   target: &RenderTarget,
+                   target_size: &Size2D<f32>,
+                   cache_texture: TextureId) {
+        self.device.bind_render_target(render_target);
+        gl::viewport(0,
+                     0,
+                     target_size.width as i32,
+                     target_size.height as i32);
 
-        for debug_rect in frame.debug_rects.iter().rev() {
-            self.add_debug_rect(debug_rect.rect.origin,
-                                debug_rect.rect.bottom_right(),
-                                &debug_rect.label,
-                                &debug_rect.color);
+        gl::enable(gl::BLEND);
+        gl::blend_func(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        gl::blend_equation(gl::FUNC_ADD);
+
+        // TODO(gw): oops!
+        self.device.bind_cache_texture(cache_texture);
+        for i in 0..8 {
+            self.device.bind_layer_texture(i, cache_texture);
         }
 
-        //gl::clear_color(1.0, 1.0, 1.0, 1.0);
-        //gl::clear(gl::COLOR_BUFFER_BIT);
+        let projection = match render_target {
+            Some(..) => {
+                // todo(gw): remove me!
+                gl::clear_color(1.0, 1.0, 1.0, 0.0);
 
-        if frame.passes.is_empty() {
-            return;
-        }
+                Matrix4D::ortho(0.0,
+                               target_size.width as f32,
+                               0.0,
+                               target_size.height as f32,
+                               ORTHO_NEAR_PLANE,
+                               ORTHO_FAR_PLANE)
+            }
+            None => {
+                // todo(gw): remove me!
+                gl::clear_color(1.0, 1.0, 1.0, 1.0);
 
-        let projection = Matrix4D::ortho(0.0,
-                                         framebuffer_size.width as f32,
-                                         framebuffer_size.height as f32,
-                                         0.0,
-                                         ORTHO_NEAR_PLANE,
-                                         ORTHO_FAR_PLANE);
+                Matrix4D::ortho(0.0,
+                               target_size.width as f32,
+                               target_size.height as f32,
+                               0.0,
+                               ORTHO_NEAR_PLANE,
+                               ORTHO_FAR_PLANE)
+            }
+        };
 
-        gl::depth_mask(false);
-        gl::disable(gl::STENCIL_TEST);
-        gl::disable(gl::BLEND);
+        // todo(gw): remove me!
+        gl::clear(gl::COLOR_BUFFER_BIT);
 
-        self.gpu_profile_paint.begin();
-        self.gpu_profile_paint.end();
-        self.gpu_profile_composite.begin();
-
-        let misc_ubos = gl::gen_buffers(1);
+        let misc_ubos = gl::gen_buffers(2);
         let layer_ubo = misc_ubos[0];
+        let tile_ubo = misc_ubos[1];
 
         gl::bind_buffer(gl::UNIFORM_BUFFER, layer_ubo);
-        gl::buffer_data(gl::UNIFORM_BUFFER, &frame.layer_ubo.items, gl::STATIC_DRAW);
+        gl::buffer_data(gl::UNIFORM_BUFFER, &target.layer_ubo, gl::STATIC_DRAW);
         gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_LAYERS, layer_ubo);
 
-        if self.text_composite_target == TextureId(0) {
-            self.text_composite_target = self.device.create_texture_ids(1)[0];
-            self.device.init_texture(self.text_composite_target,
-                                     frame.prim_cache_size.width as u32,
-                                     frame.prim_cache_size.height as u32,
-                                     ImageFormat::RGBA8,
-                                     TextureFilter::Linear,
-                                     RenderTargetMode::RenderTarget,
-                                     None);
-        }
+        gl::bind_buffer(gl::UNIFORM_BUFFER, tile_ubo);
+        gl::buffer_data(gl::UNIFORM_BUFFER, &target.tile_ubo, gl::STATIC_DRAW);
+        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_TILES, tile_ubo);
 
-        for pass in &frame.passes {
-            self.draw_prim_cache_pass(pass,
-                                      &frame.prim_cache_size);
+        for (key, tiles) in &target.composite_batches {
+            let shader = self.composite_shaders[key.shader as usize];
+            self.device.bind_program(shader, &projection);
 
-            self.device.bind_render_target(None);
-            gl::viewport(0, 0, framebuffer_size.width as i32, framebuffer_size.height as i32);
-            self.device.bind_vao(self.quad_vao_id);
-
-            for tile_batch in &pass.tile_batches {
-                let prim_ubos = gl::gen_buffers(1);
-                let prim_ubo = prim_ubos[0];
-
-                gl::bind_buffer(gl::UNIFORM_BUFFER, prim_ubo);
-                gl::buffer_data(gl::UNIFORM_BUFFER, &tile_batch.primitives, gl::STATIC_DRAW);
-                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_PRIMITIVES, prim_ubo);
-
-                for (key, tiles) in &tile_batch.batches {
-                    let shader = self.composite_shaders[key.shader as usize];
-                    self.device.bind_program(shader, &projection);
-                    self.device.bind_cache_texture(self.text_composite_target);
-                    for (i, texture_id) in key.samplers.iter().enumerate() {
-                        let texture_id = match *texture_id {
-                            TextureId(0) => self.text_composite_target,
-                            other_texture => other_texture,
-                        };
-                        self.device.bind_layer_texture(i, texture_id);
-                    }
-
-                    for batch in tiles.chunks(512) {
-                        let ubos = gl::gen_buffers(1);
-                        let ubo = ubos[0];
-
-                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
-                        gl::buffer_data(gl::UNIFORM_BUFFER, &batch, gl::STATIC_DRAW);
-                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_COMPOSITE_TILES, ubo);
-
-                        self.device.draw_indexed_triangles_instanced_u16(6, batch.len() as i32);
-                        self.profile_counters.vertices.add(6 * batch.len());
-                        self.profile_counters.draw_calls.inc();
-
-                        gl::delete_buffers(&ubos);
-                    }
-                }
-
-                gl::delete_buffers(&prim_ubos);
-            }
-        }
-
-        gl::delete_buffers(&misc_ubos);
-
-        if !frame.error_tiles.is_empty() {
-            for batch in frame.error_tiles.chunks(1024) {
+            for batch in tiles.chunks(512) {
                 let ubos = gl::gen_buffers(1);
                 let ubo = ubos[0];
 
                 gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
                 gl::buffer_data(gl::UNIFORM_BUFFER, &batch, gl::STATIC_DRAW);
-                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_TILES, ubo);
+                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_COMPOSITE_TILES, ubo);
 
-                self.device.bind_program(self.tile_error_shader, &projection);
                 self.device.draw_indexed_triangles_instanced_u16(6, batch.len() as i32);
                 self.profile_counters.vertices.add(6 * batch.len());
                 self.profile_counters.draw_calls.inc();
@@ -1380,18 +1452,497 @@ impl Renderer {
             }
         }
 
-        if !frame.clear_tiles.is_empty() {
-            for batch in frame.clear_tiles.chunks(1024) {
+        for batch in &target.cache_batches {
+            match &batch.data {
+                &PrimitiveBatchData::Rectangles(ref ubo_data) => {
+                    self.device.bind_program(self.ps_rectangle, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatchData::Image(ref ubo_data) => {
+                    self.device.bind_program(self.ps_image, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+                    self.device.bind_color_texture(batch.color_texture_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatchData::Borders(ref ubo_data) => {
+                    self.device.bind_program(self.ps_border, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatchData::BoxShadows(ref ubo_data) => {
+                    self.device.bind_program(self.ps_box_shadow, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatchData::Text(ref ubo_data) => {
+                    self.device.bind_program(self.ps_text, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+                    self.device.bind_color_texture(batch.color_texture_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                /*
+                &PrimitiveBatchData::Gradient(ref ubo_data) => {
+                    self.device.bind_program(self.ps_gradient, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }*/
+                _ => panic!("todo!"),
+
+            }
+        }
+
+        gl::disable(gl::BLEND);
+        gl::delete_buffers(&misc_ubos);
+    }
+
+/*
+    fn draw_screen_pass_phase(&mut self,
+                              phase: &ScreenPassPhase,
+                              target_size: &Size2D<f32>,
+                              framebuffer_size: &Size2D<u32>) {
+        self.device.bind_render_target(Some(self.text_composite_target));
+        gl::viewport(0,
+                     0,
+                     target_size.width as i32,
+                     target_size.height as i32);
+
+        // TODO(gw): Remove and replace with blits over required areas?
+        gl::clear_color(1.0, 1.0, 1.0, 0.0);
+        gl::clear(gl::COLOR_BUFFER_BIT);
+
+        gl::enable(gl::BLEND);
+        gl::blend_func(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        gl::blend_equation(gl::FUNC_ADD);
+
+        let projection = Matrix4D::ortho(0.0,
+                                         target_size.width,
+                                         0.0,
+                                         target_size.height,
+                                         ORTHO_NEAR_PLANE,
+                                         ORTHO_FAR_PLANE);
+
+        let misc_ubos = gl::gen_buffers(1);
+        let renderable_ubo = misc_ubos[0];
+
+        gl::bind_buffer(gl::UNIFORM_BUFFER, renderable_ubo);
+        gl::buffer_data(gl::UNIFORM_BUFFER, &phase.renderable_ubo, gl::STATIC_DRAW);
+        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_RENDERABLES, renderable_ubo);
+
+        // Draw fixed items first!
+        self.device.bind_program(self.ps_fixed, &projection);
+        self.device.bind_vao(self.quad_vao_id);
+
+        // TODO(gw): Select chunk size based on max ubo size queried from device!
+        for chunk in phase.fixed_batches.chunks(512) {
+            let ubos = gl::gen_buffers(1);
+            let ubo = ubos[0];
+
+            gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+            gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+            self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+            self.profile_counters.vertices.add(6 * chunk.len());
+            self.profile_counters.draw_calls.inc();
+
+            gl::delete_buffers(&ubos);
+        }
+
+        for batch in &phase.cache_batches {
+            match &batch.data {
+                &PrimitiveBatchData::Rectangles(ref ubo_data) => {
+                    self.device.bind_program(self.ps_rectangle, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatchData::Image(ref ubo_data) => {
+                    self.device.bind_program(self.ps_image, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+                    self.device.bind_color_texture(batch.color_texture_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatchData::Borders(ref ubo_data) => {
+                    self.device.bind_program(self.ps_border, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatchData::BoxShadows(ref ubo_data) => {
+                    self.device.bind_program(self.ps_box_shadow, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatchData::Text(ref ubo_data) => {
+                    self.device.bind_program(self.ps_text, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+                    self.device.bind_color_texture(batch.color_texture_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+                &PrimitiveBatchData::Gradient(ref ubo_data) => {
+                    self.device.bind_program(self.ps_gradient, &projection);
+                    self.device.bind_vao(self.quad_vao_id);
+
+                    // TODO(gw): Select chunk size based on max ubo size queried from device!
+                    for chunk in ubo_data.chunks(512) {
+                        let ubos = gl::gen_buffers(1);
+                        let ubo = ubos[0];
+
+                        gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                        gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                        self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                        self.profile_counters.vertices.add(6 * chunk.len());
+                        self.profile_counters.draw_calls.inc();
+
+                        gl::delete_buffers(&ubos);
+                    }
+                }
+            }
+        }
+
+        gl::disable(gl::BLEND);
+        self.device.bind_render_target(None);
+        gl::viewport(0, 0, framebuffer_size.width as i32, framebuffer_size.height as i32);
+        self.device.bind_vao(self.quad_vao_id);
+
+        let projection = Matrix4D::ortho(0.0,
+                                         framebuffer_size.width as f32,
+                                         framebuffer_size.height as f32,
+                                         0.0,
+                                         ORTHO_NEAR_PLANE,
+                                         ORTHO_FAR_PLANE);
+
+        for (key, tiles) in &phase.composite_batches {
+            let shader = self.composite_shaders[key.shader as usize];
+            self.device.bind_program(shader, &projection);
+            self.device.bind_cache_texture(self.text_composite_target);
+
+            // TODO(gw): oops!
+            for i in 0..8 {
+                self.device.bind_layer_texture(i, self.text_composite_target);
+            }
+            /*
+            for (i, texture_id) in key.samplers.iter().enumerate() {
+                let texture_id = match *texture_id {
+                    TextureId(0) => self.text_composite_target,
+                    other_texture => other_texture,
+                };
+                self.device.bind_layer_texture(i, texture_id);
+            }*/
+
+            for batch in tiles.chunks(512) {
                 let ubos = gl::gen_buffers(1);
                 let ubo = ubos[0];
 
                 gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
                 gl::buffer_data(gl::UNIFORM_BUFFER, &batch, gl::STATIC_DRAW);
-                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_TILES, ubo);
+                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_COMPOSITE_TILES, ubo);
 
-                self.device.bind_program(self.tile_clear_shader, &projection);
                 self.device.draw_indexed_triangles_instanced_u16(6, batch.len() as i32);
                 self.profile_counters.vertices.add(6 * batch.len());
+                self.profile_counters.draw_calls.inc();
+
+                gl::delete_buffers(&ubos);
+            }
+        }
+
+        gl::delete_buffers(&misc_ubos);
+    }
+
+    fn draw_screen_pass(&mut self,
+                        screen_pass: &ScreenPass,
+                        cache_size: &Size2D<f32>,
+                        framebuffer_size: &Size2D<u32>) {
+        for phase in &screen_pass.phases {
+            self.draw_screen_pass_phase(phase,
+                                        cache_size,
+                                        framebuffer_size);
+        }
+    }*/
+
+    fn draw_tile_frame(&mut self,
+                       frame: &Frame,
+                       framebuffer_size: &Size2D<u32>) {
+        //println!("render {} debug rects", frame.debug_rects.len());
+        self.gpu_profile_paint.begin();
+        self.gpu_profile_paint.end();
+        self.gpu_profile_composite.begin();
+
+        for debug_rect in frame.debug_rects.iter().rev() {
+            self.add_debug_rect(debug_rect.rect.origin,
+                                debug_rect.rect.bottom_right(),
+                                &debug_rect.label,
+                                &debug_rect.color);
+        }
+
+        gl::depth_mask(false);
+        gl::disable(gl::STENCIL_TEST);
+        gl::disable(gl::BLEND);
+
+        let projection = Matrix4D::ortho(0.0,
+                                         framebuffer_size.width as f32,
+                                         framebuffer_size.height as f32,
+                                         0.0,
+                                         ORTHO_NEAR_PLANE,
+                                         ORTHO_FAR_PLANE);
+
+        if frame.phases.is_empty() {
+            gl::clear_color(0.3, 0.3, 0.3, 1.0);
+            gl::clear(gl::COLOR_BUFFER_BIT);
+        } else {
+            if self.render_targets[0] == TextureId(0) {
+                self.render_targets[0] = self.device.create_texture_ids(1)[0];
+                self.render_targets[1] = self.device.create_texture_ids(1)[0];
+
+                self.device.init_texture(self.render_targets[0],
+                                         frame.cache_size.width as u32,
+                                         frame.cache_size.height as u32,
+                                         ImageFormat::RGBA8,
+                                         TextureFilter::Linear,
+                                         RenderTargetMode::RenderTarget,
+                                         None);
+
+                self.device.init_texture(self.render_targets[1],
+                                         frame.cache_size.width as u32,
+                                         frame.cache_size.height as u32,
+                                         ImageFormat::RGBA8,
+                                         TextureFilter::Linear,
+                                         RenderTargetMode::RenderTarget,
+                                         None);
+            }
+
+            //assert!(frame.screen_passes.len() == 1);        // todo!
+            if frame.phases.len() > 1 {
+                println!("ERR: found {:?} passes!", frame.phases.len());
+            }
+            let phase = &frame.phases[0];
+
+            let mut render_target_index = 0;
+
+            for target in phase.targets
+                               .iter()
+                               .rev() {
+                if target.index == 0 {
+                    let ct_index = self.render_targets[1 - render_target_index];
+                    self.draw_target(None,
+                                     target,
+                                     &Size2D::new(framebuffer_size.width as f32, framebuffer_size.height as f32),
+                                     ct_index);
+                } else {
+                    let rt_index = self.render_targets[render_target_index];
+                    let ct_index = self.render_targets[1 - render_target_index];
+                    self.draw_target(Some(rt_index),
+                                     target,
+                                     &frame.cache_size,
+                                     ct_index);
+                    render_target_index = 1 - render_target_index;
+                }
+            }
+        }
+
+        // Clear tiles with no items
+        if !frame.clear_tiles.is_empty() {
+            self.device.bind_program(self.tile_clear_shader, &projection);
+            self.device.bind_vao(self.quad_vao_id);
+
+            // TODO(gw): Select chunk size based on max ubo size queried from device!
+            for chunk in frame.clear_tiles.chunks(512) {
+                let ubos = gl::gen_buffers(1);
+                let ubo = ubos[0];
+
+                gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_TILES, ubo);
+
+                self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                self.profile_counters.vertices.add(6 * chunk.len());
+                self.profile_counters.draw_calls.inc();
+
+                gl::delete_buffers(&ubos);
+            }
+        }
+
+        if !frame.error_tiles.is_empty() {
+            self.device.bind_program(self.tile_error_shader, &projection);
+            self.device.bind_vao(self.quad_vao_id);
+
+            // TODO(gw): Select chunk size based on max ubo size queried from device!
+            for chunk in frame.error_tiles.chunks(512) {
+                let ubos = gl::gen_buffers(1);
+                let ubo = ubos[0];
+
+                gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_TILES, ubo);
+
+                self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                self.profile_counters.vertices.add(6 * chunk.len());
                 self.profile_counters.draw_calls.inc();
 
                 gl::delete_buffers(&ubos);

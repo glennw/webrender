@@ -19,7 +19,7 @@ use scene::{SceneStackingContext, ScenePipeline, Scene, SceneItem, SpecificScene
 use scoped_threadpool;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
-use tiling::{Clip, ClipKind, FrameBuilder};
+use tiling::{Clip, FrameBuilder};
 use util::{MatrixHelpers};
 use webrender_traits::{AuxiliaryLists, PipelineId, Epoch, ScrollPolicy, ScrollLayerId};
 use webrender_traits::{StackingContext, FilterOp, MixBlendMode};
@@ -481,7 +481,7 @@ impl Frame {
                     for item in &draw_list.items {
                         let clips = auxiliary_lists.complex_clip_regions(&item.clip.complex);
                         if !clips.is_empty() {
-                            builder.set_clip(Clip::from_clip_region(&clips[0], ClipKind::ClipOut));
+                            builder.set_clip(Clip::from_clip_region(&clips[0]));
                         };
 
                         match item.item {

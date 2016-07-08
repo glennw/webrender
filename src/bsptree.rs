@@ -136,6 +136,13 @@ impl<T: Copy> BspTree<T> {
             do_split = false;
         }
 
+        let min_area = 64 * 64;
+        if node_rect.size.width.0 * node_rect.size.height.0 <= min_area &&
+           partial_items.len() > 2 &&
+           partial_items.len() + current_cover_items.len() < 8 {
+            do_split = false;
+        }
+
         if !do_split {
             let node = self.node(node_index);
 
@@ -145,7 +152,7 @@ impl<T: Copy> BspTree<T> {
             }
 
             partial_buffer.clear();
-            for item_index in &node.partial_items {
+            for item_index in &partial_items {
                 let BspItemIndex(item_index) = *item_index;
                 let item = &self.items[item_index];
                 partial_buffer.push(item.data);

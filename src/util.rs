@@ -160,9 +160,9 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     (b - a) * t + a
 }
 
-pub fn subtract_rect(rect: &Rect<DevicePixel>,
-                     other: &Rect<DevicePixel>,
-                     results: &mut Vec<Rect<DevicePixel>>) {
+pub fn subtract_rect(rect: &Rect<f32>,
+                     other: &Rect<f32>,
+                     results: &mut Vec<Rect<f32>>) {
     results.clear();
 
     if rect.intersects(other) {
@@ -176,20 +176,20 @@ pub fn subtract_rect(rect: &Rect<DevicePixel>,
         let ox1 = ox0 + other.size.width;
         let oy1 = oy0 + other.size.height;
 
-        let r = rect_from_points(rx0, ry0, ox0, ry1);
-        if r.size.width.0 > 0 && r.size.height.0 > 0 {
+        let r = rect_from_points_f(rx0, ry0, ox0, ry1);
+        if r.size.width > 0.0 && r.size.height > 0.0 {
             results.push(r);
         }
-        let r = rect_from_points(ox0, ry0, ox1, oy0);
-        if r.size.width.0 > 0 && r.size.height.0 > 0 {
+        let r = rect_from_points_f(ox0, ry0, ox1, oy0);
+        if r.size.width > 0.0 && r.size.height > 0.0 {
             results.push(r);
         }
-        let r = rect_from_points(ox0, oy1, ox1, ry1);
-        if r.size.width.0 > 0 && r.size.height.0 > 0 {
+        let r = rect_from_points_f(ox0, oy1, ox1, ry1);
+        if r.size.width > 0.0 && r.size.height > 0.0 {
             results.push(r);
         }
-        let r = rect_from_points(ox1, ry0, rx1, ry1);
-        if r.size.width.0 > 0 && r.size.height.0 > 0 {
+        let r = rect_from_points_f(ox1, ry0, rx1, ry1);
+        if r.size.width > 0.0 && r.size.height > 0.0 {
             results.push(r);
         }
     } else {

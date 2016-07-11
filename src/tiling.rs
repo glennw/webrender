@@ -105,32 +105,40 @@ impl RenderTarget {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum RenderPhaseState {
+    Allocate,
+    Compile,
+}
+
 pub struct RenderPhase {
     pub targets: Vec<RenderTarget>,
     max_layers: usize,
     screen_tile_indices: Vec<usize>,
+    state: RenderPhaseState,
 }
 
 impl RenderPhase {
     fn new(max_layers: usize) -> RenderPhase {
-        let main_target = RenderTarget::new(0, max_layers);
-
         RenderPhase {
-            targets: vec![main_target],
+            targets: Vec::new(),
             max_layers: max_layers,
             screen_tile_indices: Vec::new(),
+            state: RenderPhaseState::Allocate,
         }
     }
 
     fn add_screen_tile(&mut self, index: usize) {
+        debug_assert!(self.state == RenderPhaseState::Allocate);
         self.screen_tile_indices.push(index);
     }
 
     fn alloc_resource_list(&mut self,
                            resource_list: &mut TileResourceList) -> bool {
+        debug_assert!(self.state == RenderPhaseState::Allocate);
         for (pass_index, pass) in resource_list.passes.iter_mut().enumerate() {
             for request in &mut pass.allocations {
-                match self.alloc_render_rect(1 + pass_index, &request.size) {
+                match self.alloc_render_rect(pass_index, &request.size) {
                     Some(origin) => {
                         request.origin = Some(origin);
                     }
@@ -148,7 +156,7 @@ impl RenderPhase {
     fn alloc_render_rect(&mut self,
                          target_index: usize,
                          size: &Size2D<DevicePixel>) -> Option<Point2D<DevicePixel>> {
-        debug_assert!(target_index > 0);
+        debug_assert!(self.state == RenderPhaseState::Allocate);
         if target_index == self.targets.len() {
             let index = self.targets.len();
             self.targets.push(RenderTarget::new(index, self.max_layers));
@@ -169,6 +177,7 @@ impl RenderPhase {
                                   target_index: usize,
                                   layer_index: StackingContextIndex,
                                   layer: &StackingContext) -> u32 {
+        debug_assert!(self.state == RenderPhaseState::Compile);
         let target = &mut self.targets[target_index];
 
         let StackingContextIndex(si) = layer_index;
@@ -196,6 +205,7 @@ impl RenderPhase {
                 target_index: usize,
                 actual_rect: &Rect<DevicePixel>,
                 target_rect: &Rect<DevicePixel>) -> u32 {
+        debug_assert!(self.state == RenderPhaseState::Compile);
         let tile_index_in_ubo = self.targets[target_index].tile_ubo.len();
         self.targets[target_index].tile_ubo.push(PackedTile {
             actual_rect: *actual_rect,
@@ -207,6 +217,7 @@ impl RenderPhase {
     fn add_prim_list(&mut self,
                      target_index: usize,
                      prim_list: PackedPrimList) {
+        debug_assert!(self.state == RenderPhaseState::Compile);
         self.targets[target_index].prim_lists.push(prim_list)
     }
 
@@ -214,6 +225,7 @@ impl RenderPhase {
                      target_index: usize,
                      key: CompositeBatchKey,
                      composite_tile: CompositeTile) {
+        debug_assert!(self.state == RenderPhaseState::Compile);
         let target = &mut self.targets[target_index];
 
         let batch = target.composite_batches.entry(key).or_insert_with(|| {
@@ -222,7 +234,17 @@ impl RenderPhase {
         batch.push(composite_tile);
     }
 
+    fn prepare(&mut self) -> Vec<usize> {
+        debug_assert!(self.state == RenderPhaseState::Allocate);
+        self.state = RenderPhaseState::Compile;
+        // push main target
+        let index = self.targets.len();
+        self.targets.push(RenderTarget::new(index, self.max_layers));
+        mem::replace(&mut self.screen_tile_indices, Vec::new())
+    }
+
     fn build(&mut self) {
+        debug_assert!(self.state == RenderPhaseState::Compile);
         for target in &mut self.targets {
             target.build();
         }
@@ -253,6 +275,22 @@ pub enum CompositeShader {
     Partial6,
     Partial7,
     Partial8,*/
+}
+
+impl CompositeShader {
+    fn from_cover(size: usize) -> CompositeShader {
+        match size {
+            1 => CompositeShader::Prim1,
+            2 => CompositeShader::Prim2,
+            3 => CompositeShader::Prim3,
+            4 => CompositeShader::Prim4,
+            5 => CompositeShader::Prim5,
+            6 => CompositeShader::Prim6,
+            7 => CompositeShader::Prim7,
+            8 => CompositeShader::Prim8,
+            _ => panic!("todo - other shader?"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1422,17 +1460,18 @@ impl TileResourceList {
         }
     }
 
-    fn new() -> TileResourceList {
+    fn new(pass_count: usize) -> TileResourceList {
+        let mut passes = Vec::new();
+        for _ in 0..pass_count {
+            passes.push(TilePassResourceList::new());
+        }
         TileResourceList {
-            passes: Vec::new(),
+            passes: passes,
         }
     }
 
     fn add_alloc(&mut self, pass_index: usize, size: &Size2D<DevicePixel>) {
-        debug_assert!(pass_index <= self.passes.len());
-        if pass_index == self.passes.len() {
-            self.passes.push(TilePassResourceList::new());
-        }
+        debug_assert!(pass_index < self.passes.len());
         self.passes[pass_index].allocations.push(AllocationRequest {
             origin: None,
             size: *size,
@@ -1518,14 +1557,47 @@ impl ScreenTile {
             // Tile contains a single stacking context.
             // Render direct to frame buffer so no resources needed!
         } else if self.layers.len() <= MAX_LAYERS_PER_PASS {
-            let mut resource_list = TileResourceList::new();
+            let mut resource_list = TileResourceList::new(1);
             for _ in 0..self.layers.len() {
                 resource_list.add_alloc(0, &self.rect.size);
             }
             self.resource_list = Some(resource_list)
         } else {
-            // Not currently supported - no resources needed
-            // as ps_error will be used.
+            let layers_in_first_pass = MAX_LAYERS_PER_PASS;
+            let layers_per_other_pass = MAX_LAYERS_PER_PASS-1;
+            let layers_in_other_passes = self.layers.len() - layers_in_first_pass;
+            let remaining_layers = layers_in_other_passes % layers_per_other_pass;
+            let mut pass_count = 1 + layers_in_other_passes / layers_per_other_pass;
+            if remaining_layers != 0 {
+                pass_count += 1;
+            }
+
+            let mut resource_list = TileResourceList::new(pass_count);
+            let mut current_layer_index = 0;
+            let layer_count = self.layers.len();
+
+            for pass_index in 0..pass_count {
+                if pass_index == 0 {
+                    // 1st pass has no inputs - can do max layers
+                    for _ in 0..MAX_LAYERS_PER_PASS {
+                        resource_list.add_alloc(pass_index, &self.rect.size);
+                    }
+                    current_layer_index += MAX_LAYERS_PER_PASS;
+                } else {
+                    // Subsequent passes have extra alloc for composite result
+                    // of the previous stage!
+                    let layers_in_this_pass = cmp::min(MAX_LAYERS_PER_PASS-1,
+                                                       layer_count - current_layer_index);
+                    resource_list.add_alloc(pass_index, &self.rect.size);
+                    for _ in 0..layers_in_this_pass {
+                        resource_list.add_alloc(pass_index, &self.rect.size);
+                    }
+                    current_layer_index += layers_in_this_pass;
+                }
+            }
+            debug_assert!(current_layer_index == layer_count, format!("{} vs {}", current_layer_index, layer_count));
+
+            self.resource_list = Some(resource_list)
         }
     }
 
@@ -1547,7 +1619,7 @@ impl ScreenTile {
             ScreenTileCompileResult::Clear
         } else if self.layers.len() == 1 {
             let target_rect = self.rect;
-            self.add_layer_to_phase(0,
+            self.add_layer_to_phase(phase.targets.len() - 1,
                                     &target_rect,
                                     0,
                                     layers,
@@ -1559,18 +1631,8 @@ impl ScreenTile {
 
             ScreenTileCompileResult::Ok
         } else if self.layers.len() <= MAX_LAYERS_PER_PASS {
-            let shader = match self.layers.len() {
-                1 => CompositeShader::Prim1,
-                2 => CompositeShader::Prim2,
-                3 => CompositeShader::Prim3,
-                4 => CompositeShader::Prim4,
-                5 => CompositeShader::Prim5,
-                6 => CompositeShader::Prim6,
-                7 => CompositeShader::Prim7,
-                8 => CompositeShader::Prim8,
-                _ => panic!("todo - other shader?"),
-            };
-
+            let target_count = phase.targets.len();
+            let shader = CompositeShader::from_cover(self.layers.len());
             let key = CompositeBatchKey::new(shader);
             let mut composite_tile = CompositeTile::new(&self.rect);
 
@@ -1589,7 +1651,7 @@ impl ScreenTile {
                 composite_tile.src_rects[layer_index] = r;
                 composite_tile.blend_info[layer_index] = self.layers[layer_index].layer_opacity;
 
-                self.add_layer_to_phase(1,
+                self.add_layer_to_phase(target_count - 2,
                                         &r,
                                         layer_index,
                                         layers,
@@ -1600,23 +1662,141 @@ impl ScreenTile {
                                         phase);
             }
 
-            phase.add_composite(0,
+            phase.add_composite(target_count - 1,
                                 key,
                                 composite_tile);
 
             ScreenTileCompileResult::Ok
         } else {
-            ScreenTileCompileResult::Unhandled
+            let layer_count = self.layers.len();
+            let mut current_pass = 0;
+            let mut current_layer = Vec::new();
+            let pass_count = self.resource_list.as_ref().unwrap().passes.len();
+
+            for layer_index in 0..layer_count {
+                if (current_pass == 0 && current_layer.len() == MAX_LAYERS_PER_PASS) ||
+                   (current_pass > 0 && current_layer.len() == MAX_LAYERS_PER_PASS-1) {
+                    if current_pass > 0 {
+                        let tile_origin = self.resource_list
+                                              .as_ref()
+                                              .unwrap()
+                                              .passes[current_pass]
+                                              .allocations[0]
+                                              .origin
+                                              .unwrap();
+                        let tile_rect = Rect::new(tile_origin, self.rect.size);
+                        let mut layer_composite_tile = CompositeTile::new(&tile_rect);
+                        let mut i = 0;
+                        for (rect, opacity) in current_layer.drain(..) {
+                            layer_composite_tile.src_rects[i] = rect;
+                            layer_composite_tile.blend_info[i] = opacity;
+                            i += 1;
+                        }
+                        let shader = CompositeShader::from_cover(i);
+                        let key = CompositeBatchKey::new(shader);
+                        phase.add_composite(current_pass + 1,
+                                            key,
+                                            layer_composite_tile);
+                        current_layer.push((tile_rect, 1.0));
+                    }
+                    current_layer.clear();
+                    current_pass += 1;
+                }
+
+                let origin = self.resource_list
+                                 .as_ref()
+                                 .unwrap()
+                                 .passes[current_pass]
+                                 .allocations[current_layer.len()]
+                                 .origin
+                                 .unwrap();
+                let r = Rect::new(origin, self.rect.size);
+                current_layer.push((r, self.layers[layer_index].layer_opacity));
+
+                self.add_layer_to_phase(current_pass,
+                                        &r,
+                                        layer_index,
+                                        layers,
+                                        pipeline_auxiliary_lists,
+                                        resource_cache,
+                                        frame_id,
+                                        device_pixel_ratio,
+                                        phase);
+            }
+
+            debug_assert!(current_layer.len() > 0);
+            let mut final_composite_tile = CompositeTile::new(&self.rect);
+            let mut i = 0;
+            for (rect, opacity) in current_layer.drain(..) {
+                final_composite_tile.src_rects[i] = rect;
+                final_composite_tile.blend_info[i] = opacity;
+                i += 1;
+            }
+            let shader = CompositeShader::from_cover(i);
+            let key = CompositeBatchKey::new(shader);
+            phase.add_composite(current_pass + 1,
+                                key,
+                                final_composite_tile);
+
+            /*
+            let mut current_layer_index = 0;
+            let layer_count = self.layers.len();
+            let pass_count = self.resource_list.as_ref().unwrap().passes.len();
+
+            for pass_index in 0..pass_count {
+                let layers_in_this_pass;
+
+                if pass_index == 0 {
+                    layers_in_this_pass = MAX_LAYERS_PER_PASS;
+                } else {
+                    panic!("set up prev comp!");
+
+                    layers_in_this_pass = cmp::min(MAX_LAYERS_PER_PASS-1,
+                                                   layer_count - current_layer_index);
+                }
+
+                for local_layer_index in 0..layers_in_this_pass {
+                    let mut index_in_tile = local_layer_index;
+                    if pass_index != 0 {
+                        // To account for the composite from previous stage
+                        index_in_tile += 1;
+                    }
+
+                    let origin = self.resource_list
+                                     .as_ref()
+                                     .unwrap()
+                                     .passes[pass_index]
+                                     .allocations[current_layer_index]
+                                     .origin
+                                     .unwrap();
+                    let r = Rect::new(origin, self.rect.size);
+                    composite_tile.src_rects[index_in_tile] = r;
+                    composite_tile.blend_info[index_in_tile] = self.layers[current_layer_index].layer_opacity;
+
+                    self.add_layer_to_phase(pass_index + 1,
+                                            &r,
+                                            current_layer_index,
+                                            layers,
+                                            pipeline_auxiliary_lists,
+                                            resource_cache,
+                                            frame_id,
+                                            device_pixel_ratio,
+                                            phase);
+
+                    current_layer_index += 1;
+                }
+            }
+            debug_assert!(current_layer_index == layer_count, format!("{} vs {}", current_layer_index, layer_count));
+
+            let mut final_composite_tile = CompositeTile::new(&self.rect);
+            phase.add_composite(0,
+                                final_key,
+                                final_composite_tile);
+                                */
+
+            ScreenTileCompileResult::Ok
         }
     }
-}
-
-#[derive(Copy, Clone, Debug)]
-enum RenderableStrategy {
-    Unknown,
-    AlphaBlendBatching,
-    FixedRectangle,
-    //PrimCache,
 }
 
 #[derive(Clone)]
@@ -1624,8 +1804,6 @@ struct Renderable {
     xf_rect: TransformedRect,
     layer_index: StackingContextIndex,
     index_buffer: Vec<PrimitiveIndex>,
-    //cache_size: CacheSize,
-    //strategy: RenderableStrategy,
     tile_hit_count: usize,
 }
 
@@ -1990,7 +2168,6 @@ impl FrameBuilder {
                     if tile_layer.prim_indices.len() > 0 {
                         tile_layer.compile(layer, &screen_tile.rect);
                         if tile_layer.is_opaque {
-                            //println!(" rem {} layers!", screen_tile.layers.len());
                             screen_tile.layers.clear();
                         }
                         screen_tile.layers.push(tile_layer);
@@ -2103,8 +2280,7 @@ impl FrameBuilder {
         for phase in &mut phases {
             // TODO(gw): This is an ugly workaround for the borrow checker.
             // Restructure this code a bit...
-            let screen_tile_indices = mem::replace(&mut phase.screen_tile_indices,
-                                                   Vec::new());
+            let screen_tile_indices = phase.prepare();
 
             for screen_tile_index in screen_tile_indices {
                 let screen_tile = &mut screen_tiles[screen_tile_index];

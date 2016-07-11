@@ -1892,10 +1892,8 @@ impl Renderer {
             for (phase_index, phase) in frame.phases.iter().enumerate() {
                 let mut render_target_index = 0;
 
-                for target in phase.targets
-                                   .iter()
-                                   .rev() {
-                    if target.index == 0 {
+                for target in &phase.targets {
+                    if target.index == phase.targets.len()-1 {
                         let ct_index = self.render_targets[1 - render_target_index];
                         self.draw_target(None,
                                          target,

@@ -1446,7 +1446,6 @@ pub struct ScreenTileIndex(usize);
 enum ScreenTileCompileResult {
     Clear,
     Unhandled,
-    OutOfMemory,
     Ok,
 }
 
@@ -1575,9 +1574,18 @@ impl ScreenTile {
             let key = CompositeBatchKey::new(shader);
             let mut composite_tile = CompositeTile::new(&self.rect);
 
+            debug_assert!(self.resource_list.as_ref().unwrap().passes.len() == 1 &&
+                          self.resource_list.as_ref().unwrap().passes[0].allocations.len() == self.layers.len());
+
             for layer_index in 0..self.layers.len() {
-                let p = phase.alloc_render_rect(1, &self.rect.size).expect("todo - alloc!");
-                let r = Rect::new(p, self.rect.size);
+                let origin = self.resource_list
+                                 .as_ref()
+                                 .unwrap()
+                                 .passes[0]
+                                 .allocations[layer_index]
+                                 .origin
+                                 .unwrap();
+                let r = Rect::new(origin, self.rect.size);
                 composite_tile.src_rects[layer_index] = r;
                 composite_tile.blend_info[layer_index] = self.layers[layer_index].layer_opacity;
 
@@ -2090,39 +2098,42 @@ impl FrameBuilder {
         }
 
         phases.push(current_phase);
-        println!("scene has {} phases", phases.len());
-/*
-        for screen_tile in &mut screen_tiles {
-            println!("\t{:?}", screen_tile.resource_list.as_ref().map_or(0, |a| a.passes.len()));
+        //println!("scene has {} phases", phases.len());
 
-            let kind = screen_tile.compile(&self.layers,
-                                           pipeline_auxiliary_lists,
-                                           resource_cache,
-                                           frame_id,
-                                           self.device_pixel_ratio,
-                                           &mut current_phase);
+        for phase in &mut phases {
+            // TODO(gw): This is an ugly workaround for the borrow checker.
+            // Restructure this code a bit...
+            let screen_tile_indices = mem::replace(&mut phase.screen_tile_indices,
+                                                   Vec::new());
 
-            match kind {
-                ScreenTileCompileResult::Clear => {
-                    clear_tiles.push(ClearTile {
-                        rect: screen_tile.rect,
-                    });
-                }
-                ScreenTileCompileResult::Unhandled => {
-                    error_tiles.push(ErrorTile {
-                        rect: screen_tile.rect,
-                    });
-                }
-                ScreenTileCompileResult::OutOfMemory => {
-                    panic!("todo");
-                }
-                ScreenTileCompileResult::Ok => {
+            for screen_tile_index in screen_tile_indices {
+                let screen_tile = &mut screen_tiles[screen_tile_index];
+
+                let kind = screen_tile.compile(&self.layers,
+                                               pipeline_auxiliary_lists,
+                                               resource_cache,
+                                               frame_id,
+                                               self.device_pixel_ratio,
+                                               phase);
+
+                match kind {
+                    ScreenTileCompileResult::Clear => {
+                        clear_tiles.push(ClearTile {
+                            rect: screen_tile.rect,
+                        });
+                    }
+                    ScreenTileCompileResult::Unhandled => {
+                        error_tiles.push(ErrorTile {
+                            rect: screen_tile.rect,
+                        });
+                    }
+                    ScreenTileCompileResult::Ok => {
+                    }
                 }
             }
-        }*/
 
-        //let mut current_phase = RenderPhase::new(self.layers.len());
-        //current_phase.build();
+            phase.build();
+        }
 
         Frame {
             debug_rects: debug_rects,

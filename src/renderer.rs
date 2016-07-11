@@ -1375,16 +1375,15 @@ impl Renderer {
                    render_target: Option<TextureId>,
                    target: &RenderTarget,
                    target_size: &Size2D<f32>,
-                   cache_texture: TextureId) {
+                   cache_texture: TextureId,
+                   should_clear: bool) {
         self.device.bind_render_target(render_target);
         gl::viewport(0,
                      0,
                      target_size.width as i32,
                      target_size.height as i32);
 
-        gl::enable(gl::BLEND);
-        gl::blend_func(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-        gl::blend_equation(gl::FUNC_ADD);
+        gl::disable(gl::BLEND);
 
         // TODO(gw): oops!
         self.device.bind_cache_texture(cache_texture);
@@ -1418,7 +1417,9 @@ impl Renderer {
         };
 
         // todo(gw): remove me!
-        gl::clear(gl::COLOR_BUFFER_BIT);
+        if should_clear {
+            gl::clear(gl::COLOR_BUFFER_BIT);
+        }
 
         let misc_ubos = gl::gen_buffers(2);
         let layer_ubo = misc_ubos[0];
@@ -1451,6 +1452,10 @@ impl Renderer {
                 gl::delete_buffers(&ubos);
             }
         }
+
+        gl::enable(gl::BLEND);
+        gl::blend_func(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+        gl::blend_equation(gl::FUNC_ADD);
 
         for batch in &target.cache_batches {
             match &batch.data {
@@ -1884,31 +1889,29 @@ impl Renderer {
                                          None);
             }
 
-            //assert!(frame.screen_passes.len() == 1);        // todo!
-            if frame.phases.len() > 1 {
-                println!("ERR: found {:?} passes!", frame.phases.len());
-            }
-            let phase = &frame.phases[0];
+            for (phase_index, phase) in frame.phases.iter().enumerate() {
+                let mut render_target_index = 0;
 
-            let mut render_target_index = 0;
-
-            for target in phase.targets
-                               .iter()
-                               .rev() {
-                if target.index == 0 {
-                    let ct_index = self.render_targets[1 - render_target_index];
-                    self.draw_target(None,
-                                     target,
-                                     &Size2D::new(framebuffer_size.width as f32, framebuffer_size.height as f32),
-                                     ct_index);
-                } else {
-                    let rt_index = self.render_targets[render_target_index];
-                    let ct_index = self.render_targets[1 - render_target_index];
-                    self.draw_target(Some(rt_index),
-                                     target,
-                                     &frame.cache_size,
-                                     ct_index);
-                    render_target_index = 1 - render_target_index;
+                for target in phase.targets
+                                   .iter()
+                                   .rev() {
+                    if target.index == 0 {
+                        let ct_index = self.render_targets[1 - render_target_index];
+                        self.draw_target(None,
+                                         target,
+                                         &Size2D::new(framebuffer_size.width as f32, framebuffer_size.height as f32),
+                                         ct_index,
+                                         phase_index == 0);
+                    } else {
+                        let rt_index = self.render_targets[render_target_index];
+                        let ct_index = self.render_targets[1 - render_target_index];
+                        self.draw_target(Some(rt_index),
+                                         target,
+                                         &frame.cache_size,
+                                         ct_index,
+                                         true);
+                        render_target_index = 1 - render_target_index;
+                    }
                 }
             }
         }

@@ -485,6 +485,7 @@ enum PrimitiveDetails {
 #[derive(Clone)]
 enum PackedPrimitive {
     Rectangle(PackedRectanglePrimitive),
+    RectangleClip(PackedRectanglePrimitiveClip),
     Glyph(PackedGlyphPrimitive),
     Image(PackedImagePrimitive),
     Border(PackedBorderPrimitive),
@@ -526,19 +527,38 @@ impl Primitive {
             auxiliary_lists: &AuxiliaryLists,
             resource_cache: &ResourceCache,
             frame_id: FrameId,
-            device_pixel_ratio: f32) {
+            device_pixel_ratio: f32,
+            clips: &Vec<Clip>) {
         match self.details {
             PrimitiveDetails::Rectangle(ref details) => {
-                prim_list.primitives.push(PackedPrimitive::Rectangle(PackedRectanglePrimitive {
-                    common: PackedPrimitiveInfo {
-                        padding: 0,
-                        tile_index: tile_index_in_ubo,
-                        layer_index: layer_index_in_ubo,
-                        part: PrimitivePart::Invalid,
-                    },
-                    local_rect: self.rect,
-                    color: details.color,
-                }));
+                match self.clip_index {
+                    Some(clip_index) => {
+                        let ClipIndex(clip_index) = clip_index;
+                        prim_list.primitives.push(PackedPrimitive::RectangleClip(PackedRectanglePrimitiveClip {
+                            common: PackedPrimitiveInfo {
+                                padding: 0,
+                                tile_index: tile_index_in_ubo,
+                                layer_index: layer_index_in_ubo,
+                                part: PrimitivePart::Invalid,
+                            },
+                            local_rect: self.rect,
+                            color: details.color,
+                            clip: clips[clip_index].clone(),
+                        }));
+                    }
+                    None => {
+                        prim_list.primitives.push(PackedPrimitive::Rectangle(PackedRectanglePrimitive {
+                            common: PackedPrimitiveInfo {
+                                padding: 0,
+                                tile_index: tile_index_in_ubo,
+                                layer_index: layer_index_in_ubo,
+                                part: PrimitivePart::Invalid,
+                            },
+                            local_rect: self.rect,
+                            color: details.color,
+                        }));
+                    }
+                }
             }
             PrimitiveDetails::Image(ref details) => {
                 let image_info = resource_cache.get_image(details.image_key,
@@ -923,6 +943,14 @@ pub struct PackedFixedRectangle {
 }
 
 #[derive(Debug, Clone)]
+pub struct PackedRectanglePrimitiveClip {
+    common: PackedPrimitiveInfo,
+    local_rect: Rect<f32>,
+    color: ColorF,
+    clip: Clip,
+}
+
+#[derive(Debug, Clone)]
 pub struct PackedRectanglePrimitive {
     common: PackedPrimitiveInfo,
     local_rect: Rect<f32>,
@@ -978,6 +1006,7 @@ pub struct PackedBoxShadowPrimitive {
 #[derive(Debug)]
 pub enum PrimitiveBatchData {
     Rectangles(Vec<PackedRectanglePrimitive>),
+    RectanglesClip(Vec<PackedRectanglePrimitiveClip>),
     Borders(Vec<PackedBorderPrimitive>),
     BoxShadows(Vec<PackedBoxShadowPrimitive>),
     Text(Vec<PackedGlyphPrimitive>),
@@ -996,6 +1025,9 @@ impl PrimitiveBatch {
         let data = match prim {
             &PackedPrimitive::Rectangle(..) => {
                 PrimitiveBatchData::Rectangles(Vec::new())
+            }
+            &PackedPrimitive::RectangleClip(..) => {
+                PrimitiveBatchData::RectanglesClip(Vec::new())
             }
             &PackedPrimitive::Border(..) => {
                 PrimitiveBatchData::Borders(Vec::new())
@@ -1038,6 +1070,13 @@ impl PrimitiveBatch {
                 true
             }
             (_, &PackedPrimitive::Rectangle(ref prim)) => {
+                false
+            }
+            (&mut PrimitiveBatchData::RectanglesClip(ref mut data), &PackedPrimitive::RectangleClip(ref prim)) => {
+                data.push(prim.clone());        // fixme!!!!!!!!!!!!!
+                true
+            }
+            (_, &PackedPrimitive::RectangleClip(ref prim)) => {
                 false
             }
             (&mut PrimitiveBatchData::Text(ref mut data), &PackedPrimitive::Glyph(ref prim)) => {
@@ -1516,6 +1555,7 @@ impl ScreenTile {
                           resource_cache: &ResourceCache,
                           frame_id: FrameId,
                           device_pixel_ratio: f32,
+                          clips: &Vec<Clip>,
                           phase: &mut RenderPhase) {
         let layer = &self.layers[layer_index];
 
@@ -1543,7 +1583,8 @@ impl ScreenTile {
                       auxiliary_lists,
                       resource_cache,
                       frame_id,
-                      device_pixel_ratio)
+                      device_pixel_ratio,
+                      clips)
         }
 
         phase.add_prim_list(target_index, prim_list);
@@ -1591,6 +1632,7 @@ impl ScreenTile {
                resource_cache: &ResourceCache,
                frame_id: FrameId,
                device_pixel_ratio: f32,
+               clips: &Vec<Clip>,
                phase: &mut RenderPhase) -> ScreenTileCompileResult {
         // Allocate space in render targets as required.
 
@@ -1611,6 +1653,7 @@ impl ScreenTile {
                                     resource_cache,
                                     frame_id,
                                     device_pixel_ratio,
+                                    clips,
                                     phase);
 
             ScreenTileCompileResult::Ok
@@ -1643,6 +1686,7 @@ impl ScreenTile {
                                         resource_cache,
                                         frame_id,
                                         device_pixel_ratio,
+                                        clips,
                                         phase);
             }
 
@@ -1700,6 +1744,7 @@ impl ScreenTile {
                                         resource_cache,
                                         frame_id,
                                         device_pixel_ratio,
+                                        clips,
                                         phase);
             }
             debug_assert!(current_layer.len() > 0);
@@ -1715,78 +1760,6 @@ impl ScreenTile {
             phase.add_composite(pass_index + 1,
                                 key,
                                 final_composite_tile);
-
-            /*
-            let layer_count = self.layers.len();
-            let mut current_pass = 0;
-            let mut current_layer = Vec::new();
-            let pass_count = self.resource_list.as_ref().unwrap().passes.len();
-
-            for layer_index in 0..layer_count {
-                if (current_pass == 0 && current_layer.len() == MAX_LAYERS_PER_PASS) ||
-                   (current_pass > 0 && current_layer.len() == MAX_LAYERS_PER_PASS-1) {
-                    if current_pass > 0 {
-                        let tile_origin = self.resource_list
-                                              .as_ref()
-                                              .unwrap()
-                                              .passes[current_pass]
-                                              .allocations[0]
-                                              .origin
-                                              .unwrap();
-                        let tile_rect = Rect::new(tile_origin, self.rect.size);
-                        let mut layer_composite_tile = CompositeTile::new(&tile_rect);
-                        let mut i = 0;
-                        for (rect, opacity) in current_layer.drain(..) {
-                            layer_composite_tile.src_rects[i] = rect;
-                            layer_composite_tile.blend_info[i] = opacity;
-                            i += 1;
-                        }
-                        let shader = CompositeShader::from_cover(i);
-                        let key = CompositeBatchKey::new(shader);
-                        phase.add_composite(current_pass + 1,
-                                            key,
-                                            layer_composite_tile);
-                        current_layer.push((tile_rect, 1.0));
-                    }
-                    current_layer.clear();
-                    current_pass += 1;
-                }
-
-                let origin = self.resource_list
-                                 .as_ref()
-                                 .unwrap()
-                                 .passes[current_pass]
-                                 .allocations[current_layer.len()]
-                                 .origin
-                                 .unwrap();
-                let r = Rect::new(origin, self.rect.size);
-                current_layer.push((r, self.layers[layer_index].layer_opacity));
-
-                self.add_layer_to_phase(current_pass,
-                                        &r,
-                                        layer_index,
-                                        layers,
-                                        pipeline_auxiliary_lists,
-                                        resource_cache,
-                                        frame_id,
-                                        device_pixel_ratio,
-                                        phase);
-            }
-
-            debug_assert!(current_layer.len() > 0);
-            let mut final_composite_tile = CompositeTile::new(&self.rect);
-            let mut i = 0;
-            for (rect, opacity) in current_layer.drain(..) {
-                final_composite_tile.src_rects[i] = rect;
-                final_composite_tile.blend_info[i] = opacity;
-                i += 1;
-            }
-            let shader = CompositeShader::from_cover(i);
-            let key = CompositeBatchKey::new(shader);
-            phase.add_composite(current_pass + 1,
-                                key,
-                                final_composite_tile);
-                                */
 
             ScreenTileCompileResult::Ok
         }
@@ -2284,6 +2257,7 @@ impl FrameBuilder {
                                                resource_cache,
                                                frame_id,
                                                self.device_pixel_ratio,
+                                               &self.clips,
                                                phase);
 
                 match kind {

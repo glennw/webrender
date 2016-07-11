@@ -108,6 +108,7 @@ impl RenderTarget {
 pub struct RenderPhase {
     pub targets: Vec<RenderTarget>,
     max_layers: usize,
+    screen_tile_indices: Vec<usize>,
 }
 
 impl RenderPhase {
@@ -117,7 +118,31 @@ impl RenderPhase {
         RenderPhase {
             targets: vec![main_target],
             max_layers: max_layers,
+            screen_tile_indices: Vec::new(),
         }
+    }
+
+    fn add_screen_tile(&mut self, index: usize) {
+        self.screen_tile_indices.push(index);
+    }
+
+    fn alloc_resource_list(&mut self,
+                           resource_list: &mut TileResourceList) -> bool {
+        for (pass_index, pass) in resource_list.passes.iter_mut().enumerate() {
+            for request in &mut pass.allocations {
+                match self.alloc_render_rect(1 + pass_index, &request.size) {
+                    Some(origin) => {
+                        request.origin = Some(origin);
+                    }
+                    None => {
+                        // Failed to alloc - bail out and handle with new phase
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
     }
 
     fn alloc_render_rect(&mut self,
@@ -1965,21 +1990,10 @@ impl FrameBuilder {
                 }
             }
 
-            let is_debug = false;//screen_tile.rect.origin.x.0 == 1024 &&
-                           //screen_tile.rect.origin.y.0 == 640;
-
-            if is_debug {
-                println!("debug: {:?}", screen_tile.layers);
-            }
-
             if self.debug {
                 debug_rects.push(DebugRect {
                     label: format!("{}|{}", screen_tile.layer_count(), prim_count),
-                    color: if is_debug {
-                        ColorF::new(0.0, 1.0, 0.0, 1.0)
-                    } else {
-                        ColorF::new(1.0, 0.0, 0.0, 1.0)
-                    },
+                    color: ColorF::new(1.0, 0.0, 0.0, 1.0),
                     rect: screen_tile.rect,
                 })
             }
@@ -2034,8 +2048,6 @@ impl FrameBuilder {
         let mut clear_tiles = Vec::new();
         let mut error_tiles = Vec::new();
 
-        let mut current_phase = RenderPhase::new(self.layers.len());
-
         // Build list of passes, target allocs that each tile needs.
         for screen_tile in &mut screen_tiles {
             screen_tile.build_resource_list();
@@ -2048,6 +2060,38 @@ impl FrameBuilder {
             b_passes.cmp(&a_passes)
         });
 
+        // Do the allocations now, assigning each tile to a render
+        // phase as required.
+        let mut phases = Vec::new();
+        let mut current_phase = RenderPhase::new(self.layers.len());
+
+        for (screen_tile_index, screen_tile) in screen_tiles.iter_mut().enumerate() {
+            match screen_tile.resource_list {
+                Some(ref mut resource_list) => {
+                    let ok = current_phase.alloc_resource_list(resource_list);
+
+                    if !ok {
+                        let full_phase = mem::replace(&mut current_phase,
+                                                      RenderPhase::new(self.layers.len()));
+                        phases.push(full_phase);
+
+                        let ok = current_phase.alloc_resource_list(resource_list);
+                        assert!(ok, "TODO: Handle single tile not fitting in render phase.");
+                    }
+
+                    current_phase.add_screen_tile(screen_tile_index);
+                }
+                None => {
+                    // Doesn't need any resources - can be added
+                    // to this phase unconditionally.
+                    current_phase.add_screen_tile(screen_tile_index);
+                }
+            }
+        }
+
+        phases.push(current_phase);
+        println!("scene has {} phases", phases.len());
+/*
         for screen_tile in &mut screen_tiles {
             println!("\t{:?}", screen_tile.resource_list.as_ref().map_or(0, |a| a.passes.len()));
 
@@ -2075,13 +2119,14 @@ impl FrameBuilder {
                 ScreenTileCompileResult::Ok => {
                 }
             }
-        }
+        }*/
 
-        current_phase.build();
+        //let mut current_phase = RenderPhase::new(self.layers.len());
+        //current_phase.build();
 
         Frame {
             debug_rects: debug_rects,
-            phases: vec![current_phase],
+            phases: phases,
             clear_tiles: clear_tiles,
             error_tiles: error_tiles,
             cache_size: Size2D::new(RENDERABLE_CACHE_SIZE.0 as f32,

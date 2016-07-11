@@ -1366,18 +1366,53 @@ impl ScreenTileLayer {
     }
 }
 
-struct ScreenTilePass {
-    input: Option<usize>,
+#[derive(Debug)]
+struct AllocationRequest {
+    origin: Option<Point2D<DevicePixel>>,
+    size: Size2D<DevicePixel>,
 }
 
 #[derive(Debug)]
-struct ScreenTilePassResourceList {
-    required_allocations: Vec<Size2D<DevicePixel>>,
+struct TilePassResourceList {
+    allocations: Vec<AllocationRequest>,
+}
+
+impl TilePassResourceList {
+    fn new() -> TilePassResourceList {
+        TilePassResourceList {
+            allocations: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
-struct ScreenTileResourceList {
-    passes: Vec<ScreenTilePassResourceList>,
+struct TileResourceList {
+    passes: Vec<TilePassResourceList>,
+}
+
+impl TileResourceList {
+    fn none() -> TileResourceList {
+        TileResourceList {
+            passes: Vec::new(),
+        }
+    }
+
+    fn new() -> TileResourceList {
+        TileResourceList {
+            passes: Vec::new(),
+        }
+    }
+
+    fn add_alloc(&mut self, pass_index: usize, size: &Size2D<DevicePixel>) {
+        debug_assert!(pass_index <= self.passes.len());
+        if pass_index == self.passes.len() {
+            self.passes.push(TilePassResourceList::new());
+        }
+        self.passes[pass_index].allocations.push(AllocationRequest {
+            origin: None,
+            size: *size,
+        });
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -1390,12 +1425,22 @@ enum ScreenTileCompileResult {
     Ok,
 }
 
+#[derive(Debug)]
 struct ScreenTile {
     rect: Rect<DevicePixel>,
     layers: Vec<ScreenTileLayer>,
+    resource_list: Option<TileResourceList>,
 }
 
 impl ScreenTile {
+    fn new(rect: Rect<DevicePixel>) -> ScreenTile {
+        ScreenTile {
+            rect: rect,
+            layers: Vec::new(),
+            resource_list: None,
+        }
+    }
+
     fn layer_count(&self) -> usize {
         self.layers.len()
     }
@@ -1440,6 +1485,24 @@ impl ScreenTile {
         }
 
         phase.add_prim_list(target_index, prim_list);
+    }
+
+    fn build_resource_list(&mut self) {
+        if self.layers.is_empty() {
+            // Tile is empty - will be rendered by ps_clear
+        } else if self.layers.len() == 1 {
+            // Tile contains a single stacking context.
+            // Render direct to frame buffer so no resources needed!
+        } else if self.layers.len() <= MAX_LAYERS_PER_PASS {
+            let mut resource_list = TileResourceList::new();
+            for _ in 0..self.layers.len() {
+                resource_list.add_alloc(0, &self.rect.size);
+            }
+            self.resource_list = Some(resource_list)
+        } else {
+            // Not currently supported - no resources needed
+            // as ps_error will be used.
+        }
     }
 
     fn compile(&mut self,
@@ -1488,7 +1551,7 @@ impl ScreenTile {
             let mut composite_tile = CompositeTile::new(&self.rect);
 
             for layer_index in 0..self.layers.len() {
-                let p = phase.alloc_render_rect(1, &self.rect.size).expect("todo");
+                let p = phase.alloc_render_rect(1, &self.rect.size).expect("todo - alloc!");
                 let r = Rect::new(p, self.rect.size);
                 composite_tile.src_rects[layer_index] = r;
                 composite_tile.blend_info[layer_index] = self.layers[layer_index].layer_opacity;
@@ -1854,10 +1917,7 @@ impl FrameBuilder {
 
                 let tile_rect = rect_from_points(x0, y0, x1, y1);
 
-                screen_tiles.push(ScreenTile {
-                    rect: tile_rect,
-                    layers: Vec::new(),
-                });
+                screen_tiles.push(ScreenTile::new(tile_rect));
             }
         }
 
@@ -1976,7 +2036,21 @@ impl FrameBuilder {
 
         let mut current_phase = RenderPhase::new(self.layers.len());
 
+        // Build list of passes, target allocs that each tile needs.
         for screen_tile in &mut screen_tiles {
+            screen_tile.build_resource_list();
+        }
+
+        // Sort by pass count to minimize render target switches.
+        screen_tiles.sort_by(|a, b| {
+            let a_passes = a.resource_list.as_ref().map_or(0, |a| a.passes.len());
+            let b_passes = b.resource_list.as_ref().map_or(0, |b| b.passes.len());
+            b_passes.cmp(&a_passes)
+        });
+
+        for screen_tile in &mut screen_tiles {
+            println!("\t{:?}", screen_tile.resource_list.as_ref().map_or(0, |a| a.passes.len()));
+
             let kind = screen_tile.compile(&self.layers,
                                            pipeline_auxiliary_lists,
                                            resource_cache,

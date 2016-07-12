@@ -169,7 +169,7 @@ pub struct Renderer {
     ps_image: ProgramId,
     ps_border: ProgramId,
     ps_box_shadow: ProgramId,
-    //ps_gradient: ProgramId,
+    ps_gradient: ProgramId,
 
     composite_shaders: [ProgramId; 8],
     tile_clear_shader: ProgramId,
@@ -224,7 +224,7 @@ impl Renderer {
         let ps_image = create_prim_shader("ps_image", &mut device);
         let ps_border = create_prim_shader("ps_border", &mut device);
         let ps_box_shadow = create_prim_shader("ps_box_shadow", &mut device);
-        //let ps_gradient = create_prim_shader("ps_gradient", &mut device);
+        let ps_gradient = create_prim_shader("ps_gradient", &mut device);
 
         let tile_clear_shader = create_special_shader("ps_clear", &mut device);
         let tile_error_shader = create_special_shader("ps_error", &mut device);
@@ -379,7 +379,7 @@ impl Renderer {
             ps_image: ps_image,
             ps_border: ps_border,
             ps_box_shadow: ps_box_shadow,
-            //ps_gradient: ps_gradient,
+            ps_gradient: ps_gradient,
             composite_shaders: composite_shaders,
             u_direction: UniformLocation::invalid(),
             notifier: notifier,
@@ -392,7 +392,6 @@ impl Renderer {
             last_time: 0,
             raster_op_target_a8: raster_op_target_a8,
             raster_op_target_rgba8: raster_op_target_rgba8,
-            //text_composite_target: TextureId(0),
             render_targets: [TextureId(0), TextureId(0)],
             max_raster_op_size: max_raster_op_size,
             gpu_profile_paint: GpuProfile::new(),
@@ -1309,7 +1308,6 @@ impl Renderer {
                         gl::delete_buffers(&ubos);
                     }
                 }
-                /*
                 &PrimitiveBatchData::Gradient(ref ubo_data) => {
                     self.device.bind_program(self.ps_gradient, &projection);
                     self.device.bind_vao(self.quad_vao_id);
@@ -1329,9 +1327,7 @@ impl Renderer {
 
                         gl::delete_buffers(&ubos);
                     }
-                }*/
-                _ => panic!("todo!"),
-
+                }
             }
         }
 

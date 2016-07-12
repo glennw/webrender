@@ -490,6 +490,7 @@ enum PackedPrimitive {
     Image(PackedImagePrimitive),
     Border(PackedBorderPrimitive),
     BoxShadow(PackedBoxShadowPrimitive),
+    Gradient(PackedGradientPrimitive),
 }
 
 struct PackedPrimList {
@@ -752,8 +753,6 @@ impl Primitive {
                 }));
             }
             PrimitiveDetails::Gradient(ref details) => {
-                //println!("todo - gradient");
-                /*
                 let stops = auxiliary_lists.gradient_stops(&details.stops_range);
                 for i in 0..(stops.len() - 1) {
                     let (prev_stop, next_stop) = (&stops[i], &stops[i + 1]);
@@ -776,20 +775,20 @@ impl Primitive {
 
                     let piece_rect = Rect::new(piece_origin, piece_size);
 
-                    batch_data.push(PackedGradientPrimitive {
+                    prim_list.primitives.push(PackedPrimitive::Gradient(PackedGradientPrimitive {
                         common: PackedPrimitiveInfo {
-                            padding: [0, 0],
-                            part: PrimitivePart::Invalid,
-                            renderable_index: renderable_index,
+                            padding: 0,
+                            tile_index: tile_index_in_ubo,
+                            layer_index: layer_index_in_ubo,
+                            part: PrimitivePart::Bottom,
                         },
                         local_rect: piece_rect,
                         color0: prev_stop.color,
                         color1: next_stop.color,
                         padding: [0, 0, 0],
                         dir: details.dir,
-                    });
+                    }));
                 }
-                */
             }
             PrimitiveDetails::BoxShadow(ref details) => {
                 let mut rects = Vec::new();
@@ -805,6 +804,12 @@ impl Primitive {
                         },
                         local_rect: rect,
                         color: details.color,
+
+                        border_radii: Point2D::new(details.border_radius, details.border_radius),
+                        blur_radius: details.blur_radius,
+                        inverted: 0.0,
+                        bs_rect: details.bs_rect,
+                        src_rect: details.src_rect,
                     }));
                 }
             }
@@ -974,7 +979,7 @@ pub struct PackedImagePrimitive {
     st1: Point2D<f32>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PackedGradientPrimitive {
     common: PackedPrimitiveInfo,
     local_rect: Rect<f32>,
@@ -1001,6 +1006,11 @@ pub struct PackedBoxShadowPrimitive {
     common: PackedPrimitiveInfo,
     local_rect: Rect<f32>,
     color: ColorF,
+    border_radii: Point2D<f32>,
+    blur_radius: f32,
+    inverted: f32,
+    bs_rect: Rect<f32>,
+    src_rect: Rect<f32>,
 }
 
 #[derive(Debug)]
@@ -1041,10 +1051,9 @@ impl PrimitiveBatch {
             &PackedPrimitive::Image(..) => {
                 PrimitiveBatchData::Image(Vec::new())
             }
-            /*
-            PrimitiveDetails::Gradient(..) => {
+            &PackedPrimitive::Gradient(..) => {
                 PrimitiveBatchData::Gradient(Vec::new())
-            }*/
+            }
         };
 
         let mut this = PrimitiveBatch {
@@ -1107,13 +1116,16 @@ impl PrimitiveBatch {
             (_, &PackedPrimitive::BoxShadow(ref prim)) => {
                 false
             }
-            //_ => panic!("todo"),
+            (&mut PrimitiveBatchData::Gradient(ref mut data), &PackedPrimitive::Gradient(ref prim)) => {
+                data.push(prim.clone());        // fixme!!!!!!!!!!!!!
+                true
+            }
+            (_, &PackedPrimitive::Gradient(ref prim)) => {
+                false
+            }
         }
     }
 }
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct RenderableIndex(usize);
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct StackingContextChunkIndex(usize);
@@ -1306,121 +1318,6 @@ impl Clip {
                 inner_radius_x: inner_radius.bottom_right.width,
                 inner_radius_y: inner_radius.bottom_right.height,
             },
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-struct RenderableCacheEntry {
-    rendered: bool,
-    rect: Rect<DevicePixel>,
-    st0: Point2D<f32>,
-    st1: Point2D<f32>,
-}
-
-struct RenderableCache {
-    entries: Vec<Option<RenderableCacheEntry>>,
-    target_size: Size2D<f32>,
-    page_allocator: TexturePage,
-}
-
-impl RenderableCache {
-    fn new(renderable_count: usize,
-           size: DevicePixel) -> RenderableCache {
-        let target_size = Size2D::new(size.0 as f32, size.0 as f32);
-
-        let mut entries = Vec::with_capacity(renderable_count);
-
-        for i in 0..renderable_count {
-            entries.push(None);
-        }
-
-        RenderableCache {
-            entries: entries,
-            page_allocator: TexturePage::new(TextureId(0), size.0 as u32),
-            target_size: target_size,
-        }
-    }
-
-    fn clear(&mut self) {
-        self.page_allocator.clear();
-        for entry in &mut self.entries {
-            *entry = None;
-        }
-    }
-
-    fn get(&mut self, key: RenderableIndex) -> RenderableCacheEntry {
-        let RenderableIndex(ri) = key;
-        let entry = self.entries[ri].as_mut().unwrap();
-        let result = entry.clone();
-        entry.rendered = true;
-        result
-    }
-
-    fn allocate_if_needed(&mut self,
-                          key: RenderableIndex,
-                          cache_size: CacheSize) -> bool {
-        let RenderableIndex(ri) = key;
-
-        match self.entries[ri] {
-            Some(entry) => {
-                true
-            }
-            None => {
-                let alloc_size = match cache_size {
-                    CacheSize::Fixed => {
-                        Size2D::new(2, 2)
-                    }
-                    CacheSize::Variable(size) => {
-                        Size2D::new(size.width.0 as u32,
-                                    size.height.0 as u32)
-                    }
-                    CacheSize::None => unreachable!(),
-                };
-
-                let origin = self.page_allocator
-                                 .allocate(&alloc_size, TextureFilter::Linear);
-
-                match origin {
-                    Some(origin) => {
-                        let (st0, st1) = match cache_size {
-                            CacheSize::Fixed => {
-                                let st = Point2D::new((origin.x + 1) as f32 / self.target_size.width,
-                                                      (origin.y + 1) as f32 / self.target_size.height);
-
-                                (st, st)
-                            }
-                            CacheSize::Variable(size) => {
-                                let st0 = Point2D::new(origin.x as f32 / self.target_size.width,
-                                                       origin.y as f32 / self.target_size.height);
-
-                                let st1 = Point2D::new((origin.x + alloc_size.width) as f32 / self.target_size.width,
-                                                       (origin.y + alloc_size.height) as f32 / self.target_size.height);
-
-                                (st0, st1)
-                            }
-                            CacheSize::None => unreachable!(),
-                        };
-
-                        let entry = RenderableCacheEntry {
-                            rendered: false,
-                            rect: Rect::new(Point2D::new(DevicePixel(origin.x as i32),
-                                                         DevicePixel(origin.y as i32)),
-                                            Size2D::new(DevicePixel(alloc_size.width as i32),
-                                                        DevicePixel(alloc_size.height as i32))),
-                            st0: st0,
-                            st1: st1,
-                        };
-
-                        self.entries[ri] = Some(entry);
-
-                        true
-                    }
-                    None => {
-                        false
-                    }
-                }
-            }
         }
     }
 }
@@ -1764,14 +1661,6 @@ impl ScreenTile {
             ScreenTileCompileResult::Ok
         }
     }
-}
-
-#[derive(Clone)]
-struct Renderable {
-    xf_rect: TransformedRect,
-    layer_index: StackingContextIndex,
-    index_buffer: Vec<PrimitiveIndex>,
-    tile_hit_count: usize,
 }
 
 impl FrameBuilder {

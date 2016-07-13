@@ -1314,25 +1314,25 @@ impl Renderer {
 
             gl::disable(gl::BLEND);
             gl::delete_buffers(&misc_ubos);
+        }
 
-            for (key, tiles) in &target.composite_batches {
-                let shader = self.composite_shaders[key.shader as usize];
-                self.device.bind_program(shader, &projection);
+        for (key, tiles) in &target.composite_batches {
+            let shader = self.composite_shaders[key.shader as usize];
+            self.device.bind_program(shader, &projection);
 
-                for batch in tiles.chunks(512) {
-                    let ubos = gl::gen_buffers(1);
-                    let ubo = ubos[0];
+            for batch in tiles.chunks(512) {
+                let ubos = gl::gen_buffers(1);
+                let ubo = ubos[0];
 
-                    gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
-                    gl::buffer_data(gl::UNIFORM_BUFFER, &batch, gl::STATIC_DRAW);
-                    gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_COMPOSITE_TILES, ubo);
+                gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                gl::buffer_data(gl::UNIFORM_BUFFER, &batch, gl::STATIC_DRAW);
+                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_COMPOSITE_TILES, ubo);
 
-                    self.device.draw_indexed_triangles_instanced_u16(6, batch.len() as i32);
-                    self.profile_counters.vertices.add(6 * batch.len());
-                    self.profile_counters.draw_calls.inc();
+                self.device.draw_indexed_triangles_instanced_u16(6, batch.len() as i32);
+                self.profile_counters.vertices.add(6 * batch.len());
+                self.profile_counters.draw_calls.inc();
 
-                    gl::delete_buffers(&ubos);
-                }
+                gl::delete_buffers(&ubos);
             }
         }
     }

@@ -2035,43 +2035,46 @@ impl FrameBuilder {
             }
         }
 
-
-        // Sort by pass count to minimize render target switches.
-        compiled_screen_tiles.sort_by(|a, b| {
-            let a_passes = a.required_target_count;
-            let b_passes = b.required_target_count;
-            b_passes.cmp(&a_passes)
-        });
-
-        // Do the allocations now, assigning each tile to a render
-        // phase as required.
         let mut phases = Vec::new();
-        let mut current_phase = RenderPhase::new(compiled_screen_tiles[0].required_target_count);
 
-        for compiled_screen_tile in compiled_screen_tiles {
-            if let Some(failed_tile) = current_phase.add_compiled_screen_tile(compiled_screen_tile) {
-                let full_phase = mem::replace(&mut current_phase,
-                                              RenderPhase::new(failed_tile.required_target_count));
-                phases.push(full_phase);
+        if !compiled_screen_tiles.is_empty() {
+            // Sort by pass count to minimize render target switches.
+            compiled_screen_tiles.sort_by(|a, b| {
+                let a_passes = a.required_target_count;
+                let b_passes = b.required_target_count;
+                b_passes.cmp(&a_passes)
+            });
 
-                let result = current_phase.add_compiled_screen_tile(failed_tile);
-                assert!(result.is_none(), "TODO: Handle single tile not fitting in render phase.");
+            // Do the allocations now, assigning each tile to a render
+            // phase as required.
+
+            let mut current_phase = RenderPhase::new(compiled_screen_tiles[0].required_target_count);
+
+            for compiled_screen_tile in compiled_screen_tiles {
+                if let Some(failed_tile) = current_phase.add_compiled_screen_tile(compiled_screen_tile) {
+                    let full_phase = mem::replace(&mut current_phase,
+                                                  RenderPhase::new(failed_tile.required_target_count));
+                    phases.push(full_phase);
+
+                    let result = current_phase.add_compiled_screen_tile(failed_tile);
+                    assert!(result.is_none(), "TODO: Handle single tile not fitting in render phase.");
+                }
             }
-        }
 
-        phases.push(current_phase);
+            phases.push(current_phase);
 
-        let ctx = RenderTargetContext {
-            layers: &self.layers,
-            resource_cache: resource_cache,
-            device_pixel_ratio: self.device_pixel_ratio,
-            frame_id: frame_id,
-            pipeline_auxiliary_lists: pipeline_auxiliary_lists,
-            clips: &self.clips,
-        };
+            let ctx = RenderTargetContext {
+                layers: &self.layers,
+                resource_cache: resource_cache,
+                device_pixel_ratio: self.device_pixel_ratio,
+                frame_id: frame_id,
+                pipeline_auxiliary_lists: pipeline_auxiliary_lists,
+                clips: &self.clips,
+            };
 
-        for phase in &mut phases {
-            phase.build(&ctx);
+            for phase in &mut phases {
+                phase.build(&ctx);
+            }
         }
 
         Frame {

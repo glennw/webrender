@@ -1559,7 +1559,10 @@ impl ScreenTile {
             return None;
         }
 
-        if self.layers.len() == 1 {
+        // TODO(gw): If a single had blending, fall through to the
+        //           compositing case below. Investigate if it's
+        //           worth having a special path for this?
+        if self.layers.len() == 1 && self.layers[0].layer_opacity == 1.0 {
             let task = RenderTask::from_layer(self.layers.pop().unwrap(),
                                               RenderTaskLocation::Fixed(self.rect));
             Some(CompiledScreenTile::new(task))

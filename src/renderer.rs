@@ -173,6 +173,7 @@ pub struct Renderer {
     ps_gradient: ProgramId,
 
     ps_rectangle_transform: ProgramId,
+    ps_image_transform: ProgramId,
 
     composite_shaders: [ProgramId; 8],
     tile_clear_shader: ProgramId,
@@ -230,6 +231,7 @@ impl Renderer {
         let ps_gradient = create_prim_shader("ps_gradient", &mut device);
 
         let ps_rectangle_transform = create_prim_shader("ps_rectangle_transform", &mut device);
+        let ps_image_transform = create_prim_shader("ps_image_transform", &mut device);
 
         let tile_clear_shader = create_special_shader("ps_clear", &mut device);
         let tile_error_shader = create_special_shader("ps_error", &mut device);
@@ -243,15 +245,6 @@ impl Renderer {
             create_composite_shader("cs_p6", &mut device),
             create_composite_shader("cs_p7", &mut device),
             create_composite_shader("cs_p8", &mut device),
-
-            //create_composite_shader("cs_p1_partial", &mut device),
-            //create_composite_shader("cs_p2_partial", &mut device),
-            //create_composite_shader("cs_p3_partial", &mut device),
-            //create_composite_shader("cs_p4_partial", &mut device),
-            //create_composite_shader("cs_p5_partial", &mut device),
-            //create_composite_shader("cs_p6_partial", &mut device),
-            //create_composite_shader("cs_p7_partial", &mut device),
-            //create_composite_shader("cs_p8_partial", &mut device),
         ];
 
         let texture_ids = device.create_texture_ids(1024);
@@ -386,6 +379,7 @@ impl Renderer {
             ps_box_shadow: ps_box_shadow,
             ps_gradient: ps_gradient,
             ps_rectangle_transform: ps_rectangle_transform,
+            ps_image_transform: ps_image_transform,
             composite_shaders: composite_shaders,
             u_direction: UniformLocation::invalid(),
             notifier: notifier,
@@ -1218,7 +1212,11 @@ impl Renderer {
                         }
                     }
                     &PrimitiveBatchData::Image(ref ubo_data) => {
-                        self.device.bind_program(self.ps_image, &projection);
+                        let shader = match batch.transform_kind {
+                            TransformedRectKind::AxisAligned => self.ps_image,
+                            TransformedRectKind::Complex => self.ps_image_transform,
+                        };
+                        self.device.bind_program(shader, &projection);
                         self.device.bind_vao(self.quad_vao_id);
                         self.device.bind_color_texture(batch.color_texture_id);
 

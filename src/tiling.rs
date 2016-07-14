@@ -25,10 +25,6 @@ use webrender_traits::{ColorF, FontKey, ImageKey, ImageRendering, ComplexClipReg
 use webrender_traits::{BorderDisplayItem, BorderStyle, ItemRange, AuxiliaryLists, BorderRadius};
 use webrender_traits::{BoxShadowClipMode, PipelineId, ScrollLayerId};
 
-// TODO(gw): Must be kept in sync with prim_shared.glsl - use #defines to set these instead?
-pub const ALPHA_BATCH_MAX_LAYERS: usize = 256;
-pub const ALPHA_BATCH_MAX_TILES: usize = 400;
-
 struct RenderTargetContext<'a> {
     layers: &'a Vec<StackingContext>,
     resource_cache: &'a ResourceCache,
@@ -36,6 +32,8 @@ struct RenderTargetContext<'a> {
     pipeline_auxiliary_lists: &'a HashMap<PipelineId, AuxiliaryLists, BuildHasherDefault<FnvHasher>>,
     frame_id: FrameId,
     clips: &'a Vec<Clip>,
+    alpha_batch_max_tiles: usize,
+    alpha_batch_max_layers: usize,
 }
 
 pub struct AlphaBatchRenderTask {
@@ -66,7 +64,7 @@ impl AlphaBatchRenderTask {
                              target_rect: Rect<DevicePixel>,
                              screen_tile_layer: ScreenTileLayer,
                              ctx: &RenderTargetContext) -> Option<ScreenTileLayer> {
-        if self.tile_ubo.len() == ALPHA_BATCH_MAX_TILES {
+        if self.tile_ubo.len() == ctx.alpha_batch_max_tiles {
             return Some(screen_tile_layer);
         }
         self.tile_ubo.push(PackedTile {
@@ -78,7 +76,7 @@ impl AlphaBatchRenderTask {
         match self.layer_to_ubo_map[si] {
             Some(..) => {}
             None => {
-                if self.layer_ubo.len() == ALPHA_BATCH_MAX_LAYERS {
+                if self.layer_ubo.len() == ctx.alpha_batch_max_layers {
                     return Some(screen_tile_layer);
                 }
 
@@ -100,8 +98,8 @@ impl AlphaBatchRenderTask {
     }
 
     fn build(&mut self, ctx: &RenderTargetContext) {
-        debug_assert!(self.layer_ubo.len() <= ALPHA_BATCH_MAX_LAYERS);
-        debug_assert!(self.tile_ubo.len() <= ALPHA_BATCH_MAX_TILES);
+        debug_assert!(self.layer_ubo.len() <= ctx.alpha_batch_max_layers);
+        debug_assert!(self.tile_ubo.len() <= ctx.alpha_batch_max_tiles);
 
         // Build batches
         // TODO(gw): This batching code is fairly awful - rewrite it!
@@ -1339,23 +1337,22 @@ pub struct Clip {
 }
 
 #[derive(Debug, Clone)]
-pub struct ErrorTile {
-    pub rect: Rect<DevicePixel>,
-}
-
-#[derive(Debug, Clone)]
 pub struct ClearTile {
     pub rect: Rect<DevicePixel>,
 }
 
+#[derive(Clone, Copy)]
 pub struct FrameBuilderConfig {
-
+    max_prim_layers: usize,
+    max_prim_tiles: usize,
 }
 
 impl FrameBuilderConfig {
-    pub fn new() -> FrameBuilderConfig {
+    pub fn new(max_prim_layers: usize,
+               max_prim_tiles: usize) -> FrameBuilderConfig {
         FrameBuilderConfig {
-
+            max_prim_layers: max_prim_layers,
+            max_prim_tiles: max_prim_tiles,
         }
     }
 }
@@ -1368,6 +1365,7 @@ pub struct FrameBuilder {
     clip_stack: Vec<ClipIndex>,
     device_pixel_ratio: f32,
     debug: bool,
+    config: FrameBuilderConfig,
 }
 
 pub struct Frame {
@@ -1375,7 +1373,6 @@ pub struct Frame {
     pub cache_size: Size2D<f32>,
     pub phases: Vec<RenderPhase>,
     pub clear_tiles: Vec<ClearTile>,
-    pub error_tiles: Vec<ErrorTile>,
 }
 
 impl Clip {
@@ -1605,7 +1602,8 @@ impl ScreenTile {
 impl FrameBuilder {
     pub fn new(viewport_size: Size2D<f32>,
                device_pixel_ratio: f32,
-               debug: bool) -> FrameBuilder {
+               debug: bool,
+               config: FrameBuilderConfig) -> FrameBuilder {
         let viewport_size = Size2D::new(viewport_size.width as i32, viewport_size.height as i32);
         FrameBuilder {
             screen_rect: Rect::new(Point2D::zero(), viewport_size),
@@ -1615,6 +1613,7 @@ impl FrameBuilder {
             debug: debug,
             clips: Vec::new(),
             clip_stack: Vec::new(),
+            config: config,
         }
     }
 
@@ -2026,7 +2025,6 @@ impl FrameBuilder {
                                  pipeline_auxiliary_lists);
 
         let mut clear_tiles = Vec::new();
-        let mut error_tiles = Vec::new();
 
         // Build list of passes, target allocs that each tile needs.
         let mut compiled_screen_tiles = Vec::new();
@@ -2079,6 +2077,8 @@ impl FrameBuilder {
                 frame_id: frame_id,
                 pipeline_auxiliary_lists: pipeline_auxiliary_lists,
                 clips: &self.clips,
+                alpha_batch_max_layers: self.config.max_prim_layers,
+                alpha_batch_max_tiles: self.config.max_prim_tiles,
             };
 
             for phase in &mut phases {
@@ -2090,7 +2090,6 @@ impl FrameBuilder {
             debug_rects: debug_rects,
             phases: phases,
             clear_tiles: clear_tiles,
-            error_tiles: error_tiles,
             cache_size: Size2D::new(RENDERABLE_CACHE_SIZE.0 as f32,
                                     RENDERABLE_CACHE_SIZE.0 as f32),
         }

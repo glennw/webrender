@@ -20,7 +20,7 @@ use scene::{SceneStackingContext, ScenePipeline, Scene, SceneItem, SpecificScene
 use scoped_threadpool;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
-use tiling::{Clip, FrameBuilder};
+use tiling::{Clip, FrameBuilder, FrameBuilderConfig};
 use util::{MatrixHelpers};
 use webrender_traits::{AuxiliaryLists, PipelineId, Epoch, ScrollPolicy, ScrollLayerId};
 use webrender_traits::{StackingContext, FilterOp, MixBlendMode};
@@ -82,6 +82,7 @@ pub struct Frame {
     pub root_scroll_layer_id: Option<ScrollLayerId>,
     id: FrameId,
     debug: bool,
+    frame_builder_config: FrameBuilderConfig,
     frame_builder: Option<FrameBuilder>,
 }
 
@@ -210,7 +211,7 @@ impl StackingContextHelpers for StackingContext {
 }
 
 impl Frame {
-    pub fn new(debug: bool) -> Frame {
+    pub fn new(debug: bool, config: FrameBuilderConfig) -> Frame {
         Frame {
             pipeline_epoch_map: HashMap::with_hasher(Default::default()),
             pipeline_auxiliary_lists: HashMap::with_hasher(Default::default()),
@@ -219,6 +220,7 @@ impl Frame {
             id: FrameId(0),
             debug: debug,
             frame_builder: None,
+            frame_builder_config: config,
         }
     }
 
@@ -421,7 +423,8 @@ impl Frame {
                 {
                     let mut frame_builder = FrameBuilder::new(root_pipeline.viewport_size,
                                                               device_pixel_ratio,
-                                                              self.debug);
+                                                              self.debug,
+                                                              self.frame_builder_config);
 
                     {
                         let mut context = FlattenContext {

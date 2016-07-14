@@ -27,7 +27,8 @@ use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use texture_cache::{BorderType, TextureCache, TextureInsertOp};
-use tiling::{Frame, FrameBuilderConfig, RenderPhase, PrimitiveBatchData, RenderTarget};//, ScreenPass, ScreenPassPhase, PrimitiveBatch};
+use tiling::{Frame, FrameBuilderConfig, RenderPhase, PrimitiveBatchData};
+use tiling::{TransformedRectKind, RenderTarget};
 use time::precise_time_ns;
 use webrender_traits::{ColorF, Epoch, PipelineId, RenderNotifier};
 use webrender_traits::{ImageFormat, MixBlendMode, RenderApiSender};
@@ -171,6 +172,8 @@ pub struct Renderer {
     ps_box_shadow: ProgramId,
     ps_gradient: ProgramId,
 
+    ps_rectangle_transform: ProgramId,
+
     composite_shaders: [ProgramId; 8],
     tile_clear_shader: ProgramId,
     tile_error_shader: ProgramId,
@@ -225,6 +228,8 @@ impl Renderer {
         let ps_border = create_prim_shader("ps_border", &mut device);
         let ps_box_shadow = create_prim_shader("ps_box_shadow", &mut device);
         let ps_gradient = create_prim_shader("ps_gradient", &mut device);
+
+        let ps_rectangle_transform = create_prim_shader("ps_rectangle_transform", &mut device);
 
         let tile_clear_shader = create_special_shader("ps_clear", &mut device);
         let tile_error_shader = create_special_shader("ps_error", &mut device);
@@ -380,6 +385,7 @@ impl Renderer {
             ps_border: ps_border,
             ps_box_shadow: ps_box_shadow,
             ps_gradient: ps_gradient,
+            ps_rectangle_transform: ps_rectangle_transform,
             composite_shaders: composite_shaders,
             u_direction: UniformLocation::invalid(),
             notifier: notifier,
@@ -1168,7 +1174,11 @@ impl Renderer {
             for batch in &alpha_task.batches {
                 match &batch.data {
                     &PrimitiveBatchData::Rectangles(ref ubo_data) => {
-                        self.device.bind_program(self.ps_rectangle, &projection);
+                        let shader = match batch.transform_kind {
+                            TransformedRectKind::AxisAligned => self.ps_rectangle,
+                            TransformedRectKind::Complex => self.ps_rectangle_transform,
+                        };
+                        self.device.bind_program(shader, &projection);
                         self.device.bind_vao(self.quad_vao_id);
 
                         // TODO(gw): Select chunk size based on max ubo size queried from device!

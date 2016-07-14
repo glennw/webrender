@@ -118,7 +118,8 @@ impl AlphaBatchRenderTask {
                     let layer = &ctx.layers[si];
                     let PrimitiveIndex(pi) = next_prim_index;
                     let prim = &layer.primitives[pi];
-                    let mut new_batch = PrimitiveBatch::new(prim);
+                    let transform_kind = layer.xf_rect.as_ref().unwrap().kind;
+                    let mut new_batch = PrimitiveBatch::new(prim, transform_kind);
                     let layer_index_in_ubo = self.layer_to_ubo_map[si].unwrap() as u32;
                     let tile_index_in_ubo = screen_tile_layer_index as u32;
                     let auxiliary_lists = ctx.pipeline_auxiliary_lists.get(&layer.pipeline_id)
@@ -127,6 +128,7 @@ impl AlphaBatchRenderTask {
                                        layer_index_in_ubo,
                                        tile_index_in_ubo,
                                        auxiliary_lists,
+                                       transform_kind,
                                        ctx);
                     debug_assert!(ok);
                     batch = Some(new_batch);
@@ -148,12 +150,14 @@ impl AlphaBatchRenderTask {
                                     let next_prim = &layer.primitives[pi];
                                     let layer_index_in_ubo = self.layer_to_ubo_map[si].unwrap() as u32;
                                     let tile_index_in_ubo = screen_tile_layer_index as u32;
+                                    let transform_kind = layer.xf_rect.as_ref().unwrap().kind;
                                     let auxiliary_lists = ctx.pipeline_auxiliary_lists.get(&layer.pipeline_id)
                                                                                       .expect("No auxiliary lists?!");
                                     if !next_prim.pack(&mut batch,
                                                        layer_index_in_ubo,
                                                        tile_index_in_ubo,
                                                        auxiliary_lists,
+                                                       transform_kind,
                                                        ctx) {
                                         screen_tile_layer.prim_indices.push(next_prim_index);
                                         break;
@@ -475,8 +479,8 @@ enum CacheSize {
     Variable(Size2D<DevicePixel>),
 }
 
-#[derive(Debug, Clone)]
-enum TransformedRectKind {
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum TransformedRectKind {
     AxisAligned,
     Complex,
 }
@@ -528,8 +532,6 @@ impl TransformedRect {
                 }
             }
             TransformedRectKind::Complex => {
-                println!("complex!");
-
                 let vertices = [
                     transform.transform_point4d(&Point4D::new(rect.origin.x,
                                                               rect.origin.y,
@@ -694,7 +696,12 @@ impl Primitive {
             layer_index_in_ubo: u32,
             tile_index_in_ubo: u32,
             auxiliary_lists: &AuxiliaryLists,
+            transform_kind: TransformedRectKind,
             ctx: &RenderTargetContext) -> bool {
+        if transform_kind != batch.transform_kind {
+            return false;
+        }
+
         match (&mut batch.data, &self.details) {
             (&mut PrimitiveBatchData::Rectangles(ref mut data), &PrimitiveDetails::Rectangle(ref details)) => {
                 match self.clip_index {
@@ -1221,12 +1228,13 @@ pub enum PrimitiveBatchData {
 
 #[derive(Debug)]
 pub struct PrimitiveBatch {
+    pub transform_kind: TransformedRectKind,
     pub color_texture_id: TextureId,        // TODO(gw): Expand to sampler array to handle all glyphs!
     pub data: PrimitiveBatchData,
 }
 
 impl PrimitiveBatch {
-    fn new(prim: &Primitive) -> PrimitiveBatch {
+    fn new(prim: &Primitive, transform_kind: TransformedRectKind) -> PrimitiveBatch {
         let data = match prim.details {
             PrimitiveDetails::Rectangle(..) => {
                 match prim.clip_index {
@@ -1253,6 +1261,7 @@ impl PrimitiveBatch {
 
         let mut this = PrimitiveBatch {
             color_texture_id: TextureId(0),
+            transform_kind: transform_kind,
             data: data,
         };
 

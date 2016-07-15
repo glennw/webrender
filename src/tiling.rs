@@ -1513,8 +1513,9 @@ impl ScreenTileLayer {
         // Inter-layer occlusion
         let PrimitiveIndex(pi) = *self.prim_indices.last().unwrap();
         let last_prim = &layer.primitives[pi];
-        if self.layer_opacity == 1.0 &&
+        if layer.opacity == 1.0 &&
            last_prim.is_opaque() &&
+           layer.xf_rect.as_ref().unwrap().kind == TransformedRectKind::AxisAligned &&
            rect_contains_rect(&last_prim.xf_rect.as_ref().unwrap().bounding_rect,
                               screen_rect) {
             self.is_opaque = true;

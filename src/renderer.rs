@@ -1204,7 +1204,7 @@ impl Renderer {
         let projection = match render_target {
             Some(..) => {
                 // todo(gw): remove me!
-                gl::clear_color(1.0, 1.0, 1.0, 0.0);
+                gl::clear_color(0.0, 0.0, 0.0, 0.0);
 
                 Matrix4D::ortho(0.0,
                                target_size.width as f32,

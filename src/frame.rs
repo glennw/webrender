@@ -501,8 +501,10 @@ impl Frame {
 
                     for item in &draw_list.items {
                         let clips = auxiliary_lists.complex_clip_regions(&item.clip.complex);
-                        if !clips.is_empty() {
-                            builder.set_clip(Clip::from_clip_region(&clips[0]));
+                        let clip = if clips.is_empty() {
+                            None
+                        } else {
+                            Some(Box::new(Clip::from_clip_region(&clips[0])))
                         };
 
                         match item.item {
@@ -517,12 +519,16 @@ impl Frame {
                             }
                             SpecificDisplayItem::Image(ref info) => {
                                 builder.add_image(item.rect,
+                                                  &item.clip.main,
+                                                  clip,
                                                   &info.stretch_size,
                                                   info.image_key,
                                                   info.image_rendering);
                             }
                             SpecificDisplayItem::Text(ref text_info) => {
                                 builder.add_text(item.rect,
+                                                 &item.clip.main,
+                                                 clip,
                                                  text_info.font_key,
                                                  text_info.size,
                                                  text_info.blur_radius,
@@ -530,16 +536,23 @@ impl Frame {
                                                  text_info.glyphs);
                             }
                             SpecificDisplayItem::Rectangle(ref info) => {
-                                builder.add_solid_rectangle(&item.rect, &info.color);
+                                builder.add_solid_rectangle(&item.rect,
+                                                            &item.clip.main,
+                                                            clip,
+                                                            &info.color);
                             }
                             SpecificDisplayItem::Gradient(ref info) => {
                                 builder.add_gradient(item.rect,
+                                                     &item.clip.main,
+                                                     clip,
                                                      info.start_point,
                                                      info.end_point,
                                                      info.stops);
                             }
                             SpecificDisplayItem::BoxShadow(ref box_shadow_info) => {
                                 builder.add_box_shadow(&box_shadow_info.box_bounds,
+                                                       &item.clip.main,
+                                                       clip,
                                                        &box_shadow_info.offset,
                                                        &box_shadow_info.color,
                                                        box_shadow_info.blur_radius,
@@ -548,12 +561,11 @@ impl Frame {
                                                        box_shadow_info.clip_mode);
                             }
                             SpecificDisplayItem::Border(ref info) => {
-                                builder.add_border(item.rect, info);
+                                builder.add_border(item.rect,
+                                                   &item.clip.main,
+                                                   clip,
+                                                   info);
                             }
-                        }
-
-                        if !clips.is_empty() {
-                            builder.clear_clip();
                         }
                     }
                 }

@@ -31,7 +31,6 @@ struct RenderTargetContext<'a> {
     device_pixel_ratio: f32,
     pipeline_auxiliary_lists: &'a HashMap<PipelineId, AuxiliaryLists, BuildHasherDefault<FnvHasher>>,
     frame_id: FrameId,
-    clips: &'a Vec<Clip>,
     alpha_batch_max_tiles: usize,
     alpha_batch_max_layers: usize,
 }
@@ -672,12 +671,14 @@ pub struct PrimitiveIndex(usize);
 #[derive(Debug)]
 struct Primitive {
     rect: Rect<f32>,
-    clip_index: Option<ClipIndex>,
+    local_clip_rect: Rect<f32>,
+    complex_clip: Option<Box<Clip>>,
     xf_rect: Option<TransformedRect>,
     details: PrimitiveDetails,
 }
 
 impl Primitive {
+    #[inline(always)]
     fn is_opaque(&self) -> bool {
         match self.details {
             PrimitiveDetails::Rectangle(ref details) => {
@@ -702,8 +703,8 @@ impl Primitive {
 
         match (&mut batch.data, &self.details) {
             (&mut PrimitiveBatchData::Rectangles(ref mut data), &PrimitiveDetails::Rectangle(ref details)) => {
-                match self.clip_index {
-                    Some(clip_index) => {
+                match self.complex_clip {
+                    Some(..) => {
                         false
                     }
                     None => {
@@ -713,6 +714,7 @@ impl Primitive {
                                 tile_index: tile_index_in_ubo,
                                 layer_index: layer_index_in_ubo,
                                 part: PrimitivePart::Invalid,
+                                local_clip_rect: self.local_clip_rect,
                             },
                             local_rect: self.rect,
                             color: details.color,
@@ -723,19 +725,19 @@ impl Primitive {
             }
             (&mut PrimitiveBatchData::Rectangles(..), _) => false,
             (&mut PrimitiveBatchData::RectanglesClip(ref mut data), &PrimitiveDetails::Rectangle(ref details)) => {
-                match self.clip_index {
-                    Some(clip_index) => {
-                        let ClipIndex(clip_index) = clip_index;
+                match self.complex_clip {
+                    Some(ref clip) => {
                         data.push(PackedRectanglePrimitiveClip {
                             common: PackedPrimitiveInfo {
                                 padding: 0,
                                 tile_index: tile_index_in_ubo,
                                 layer_index: layer_index_in_ubo,
                                 part: PrimitivePart::Invalid,
+                                local_clip_rect: self.local_clip_rect,
                             },
                             local_rect: self.rect,
                             color: details.color,
-                            clip: ctx.clips[clip_index].clone(),
+                            clip: (**clip).clone(),
                         });
 
                         true
@@ -763,6 +765,7 @@ impl Primitive {
                         tile_index: tile_index_in_ubo,
                         layer_index: layer_index_in_ubo,
                         part: PrimitivePart::Invalid,
+                        local_clip_rect: self.local_clip_rect,
                     },
                     local_rect: self.rect,
                     st0: uv_rect.top_left,
@@ -794,6 +797,7 @@ impl Primitive {
                         tile_index: tile_index_in_ubo,
                         layer_index: layer_index_in_ubo,
                         part: PrimitivePart::TopLeft,
+                        local_clip_rect: self.local_clip_rect,
                     },
                     local_rect: rect_from_points_f(details.tl_outer.x,
                                                    details.tl_outer.y,
@@ -813,6 +817,7 @@ impl Primitive {
                         tile_index: tile_index_in_ubo,
                         layer_index: layer_index_in_ubo,
                         part: PrimitivePart::TopRight,
+                        local_clip_rect: self.local_clip_rect,
                     },
                     local_rect: rect_from_points_f(details.tr_inner.x,
                                                    details.tr_outer.y,
@@ -832,6 +837,7 @@ impl Primitive {
                         tile_index: tile_index_in_ubo,
                         layer_index: layer_index_in_ubo,
                         part: PrimitivePart::BottomLeft,
+                        local_clip_rect: self.local_clip_rect,
                     },
                     local_rect: rect_from_points_f(details.bl_outer.x,
                                                    details.bl_inner.y,
@@ -851,6 +857,7 @@ impl Primitive {
                         tile_index: tile_index_in_ubo,
                         layer_index: layer_index_in_ubo,
                         part: PrimitivePart::BottomRight,
+                        local_clip_rect: self.local_clip_rect,
                     },
                     local_rect: rect_from_points_f(details.br_inner.x,
                                                    details.br_inner.y,
@@ -870,6 +877,7 @@ impl Primitive {
                         tile_index: tile_index_in_ubo,
                         layer_index: layer_index_in_ubo,
                         part: PrimitivePart::Left,
+                        local_clip_rect: self.local_clip_rect,
                     },
                     local_rect: rect_from_points_f(details.tl_outer.x,
                                                    details.tl_inner.y,
@@ -889,6 +897,7 @@ impl Primitive {
                         tile_index: tile_index_in_ubo,
                         layer_index: layer_index_in_ubo,
                         part: PrimitivePart::Right,
+                        local_clip_rect: self.local_clip_rect,
                     },
                     local_rect: rect_from_points_f(details.tr_outer.x - details.right_width,
                                                    details.tr_inner.y,
@@ -908,6 +917,7 @@ impl Primitive {
                         tile_index: tile_index_in_ubo,
                         layer_index: layer_index_in_ubo,
                         part: PrimitivePart::Top,
+                        local_clip_rect: self.local_clip_rect,
                     },
                     local_rect: rect_from_points_f(details.tl_inner.x,
                                                    details.tl_outer.y,
@@ -927,6 +937,7 @@ impl Primitive {
                         tile_index: tile_index_in_ubo,
                         layer_index: layer_index_in_ubo,
                         part: PrimitivePart::Bottom,
+                        local_clip_rect: self.local_clip_rect,
                     },
                     local_rect: rect_from_points_f(details.bl_inner.x,
                                                    details.bl_outer.y - details.bottom_width,
@@ -972,6 +983,7 @@ impl Primitive {
                             tile_index: tile_index_in_ubo,
                             layer_index: layer_index_in_ubo,
                             part: PrimitivePart::Bottom,
+                            local_clip_rect: self.local_clip_rect,
                         },
                         local_rect: piece_rect,
                         color0: prev_stop.color,
@@ -995,6 +1007,7 @@ impl Primitive {
                             tile_index: tile_index_in_ubo,
                             layer_index: layer_index_in_ubo,
                             part: PrimitivePart::Invalid,
+                            local_clip_rect: self.local_clip_rect,
                         },
                         local_rect: rect,
                         color: details.color,
@@ -1041,6 +1054,7 @@ impl Primitive {
                                 tile_index: tile_index_in_ubo,
                                 layer_index: layer_index_in_ubo,
                                 part: PrimitivePart::Invalid,
+                                local_clip_rect: self.local_clip_rect,
                             },
                             local_rect: Rect::new(Point2D::new(x, y),
                                                   Size2D::new(width, height)),
@@ -1139,6 +1153,7 @@ pub struct PackedPrimitiveInfo {
     tile_index: u32,
     part: PrimitivePart,
     padding: u32,
+    local_clip_rect: Rect<f32>,
 }
 
 #[derive(Debug)]
@@ -1235,7 +1250,7 @@ impl PrimitiveBatch {
     fn new(prim: &Primitive, transform_kind: TransformedRectKind) -> PrimitiveBatch {
         let data = match prim.details {
             PrimitiveDetails::Rectangle(..) => {
-                match prim.clip_index {
+                match prim.complex_clip {
                     Some(..) => PrimitiveBatchData::RectanglesClip(Vec::new()),
                     None => PrimitiveBatchData::Rectangles(Vec::new()),
                 }
@@ -1361,8 +1376,6 @@ pub struct FrameBuilder {
     screen_rect: Rect<i32>,
     layers: Vec<StackingContext>,
     layer_stack: Vec<StackingContextIndex>,
-    clips: Vec<Clip>,
-    clip_stack: Vec<ClipIndex>,
     device_pixel_ratio: f32,
     debug: bool,
     config: FrameBuilderConfig,
@@ -1614,25 +1627,14 @@ impl FrameBuilder {
             layer_stack: Vec::new(),
             device_pixel_ratio: device_pixel_ratio,
             debug: debug,
-            clips: Vec::new(),
-            clip_stack: Vec::new(),
             config: config,
         }
     }
 
-    pub fn set_clip(&mut self, clip: Clip) {
-        let clip_index = ClipIndex(self.clips.len());
-        // TODO(gw): Handle intersecting clips!
-        self.clips.push(clip);
-        self.clip_stack.push(clip_index);
-    }
-
-    pub fn clear_clip(&mut self) {
-        self.clip_stack.pop().unwrap();
-    }
-
     fn add_primitive(&mut self,
                      rect: &Rect<f32>,
+                     clip_rect: &Rect<f32>,
+                     clip: Option<Box<Clip>>,
                      details: PrimitiveDetails) {
         let current_layer = *self.layer_stack.last().unwrap();
         let StackingContextIndex(layer_index) = current_layer;
@@ -1641,7 +1643,8 @@ impl FrameBuilder {
         let prim = Primitive {
             rect: *rect,
             xf_rect: None,
-            clip_index: self.clip_stack.last().map(|i| *i),
+            complex_clip: clip,
+            local_clip_rect: *clip_rect,
             details: details,
         };
         layer.primitives.push(prim);
@@ -1677,6 +1680,8 @@ impl FrameBuilder {
 
     pub fn add_solid_rectangle(&mut self,
                                rect: &Rect<f32>,
+                               clip_rect: &Rect<f32>,
+                               clip: Option<Box<Clip>>,
                                color: &ColorF) {
         if color.a == 0.0 {
             return;
@@ -1686,11 +1691,16 @@ impl FrameBuilder {
             color: *color,
         };
 
-        self.add_primitive(rect, PrimitiveDetails::Rectangle(prim));
+        self.add_primitive(rect,
+                           clip_rect,
+                           clip,
+                           PrimitiveDetails::Rectangle(prim));
     }
 
     pub fn add_border(&mut self,
                       rect: Rect<f32>,
+                      clip_rect: &Rect<f32>,
+                      clip: Option<Box<Clip>>,
                       border: &BorderDisplayItem) {
         let radius = &border.radius;
         let left = &border.left;
@@ -1748,11 +1758,16 @@ impl FrameBuilder {
             right_color: right_color,
         };
 
-        self.add_primitive(&rect, PrimitiveDetails::Border(prim));
+        self.add_primitive(&rect,
+                           clip_rect,
+                           clip,
+                           PrimitiveDetails::Border(prim));
     }
 
     pub fn add_gradient(&mut self,
                         rect: Rect<f32>,
+                        clip_rect: &Rect<f32>,
+                        clip: Option<Box<Clip>>,
                         start_point: Point2D<f32>,
                         end_point: Point2D<f32>,
                         stops: ItemRange) {
@@ -1764,7 +1779,10 @@ impl FrameBuilder {
                 stops_range: stops,
                 dir: AxisDirection::Vertical,
             };
-            self.add_primitive(&rect, PrimitiveDetails::Gradient(prim));
+            self.add_primitive(&rect,
+                               clip_rect,
+                               clip,
+                               PrimitiveDetails::Gradient(prim));
         } else if start_point.y == end_point.y {
             let rect = Rect::new(Point2D::new(start_point.x, rect.origin.y),
                                  Size2D::new(end_point.x - start_point.x, rect.size.height));
@@ -1772,7 +1790,10 @@ impl FrameBuilder {
                 stops_range: stops,
                 dir: AxisDirection::Horizontal,
             };
-            self.add_primitive(&rect, PrimitiveDetails::Gradient(prim));
+            self.add_primitive(&rect,
+                               clip_rect,
+                               clip,
+                               PrimitiveDetails::Gradient(prim));
         } else {
             //println!("TODO: Angle gradients! {:?} {:?} {:?}", start_point, end_point, stops);
         }
@@ -1780,6 +1801,8 @@ impl FrameBuilder {
 
     pub fn add_text(&mut self,
                     rect: Rect<f32>,
+                    clip_rect: &Rect<f32>,
+                    clip: Option<Box<Clip>>,
                     font_key: FontKey,
                     size: Au,
                     blur_radius: Au,
@@ -1797,11 +1820,16 @@ impl FrameBuilder {
             glyph_range: glyph_range,
         };
 
-        self.add_primitive(&rect, PrimitiveDetails::Text(prim));
+        self.add_primitive(&rect,
+                           clip_rect,
+                           clip,
+                           PrimitiveDetails::Text(prim));
     }
 
     pub fn add_box_shadow(&mut self,
                           box_bounds: &Rect<f32>,
+                          clip_rect: &Rect<f32>,
+                          clip: Option<Box<Clip>>,
                           box_offset: &Point2D<f32>,
                           color: &ColorF,
                           blur_radius: f32,
@@ -1835,11 +1863,16 @@ impl FrameBuilder {
             clip_mode: clip_mode,
         };
 
-        self.add_primitive(&prim_rect, PrimitiveDetails::BoxShadow(prim));
+        self.add_primitive(&prim_rect,
+                           clip_rect,
+                           clip,
+                           PrimitiveDetails::BoxShadow(prim));
     }
 
     pub fn add_image(&mut self,
                      rect: Rect<f32>,
+                     clip_rect: &Rect<f32>,
+                     clip: Option<Box<Clip>>,
                      _stretch_size: &Size2D<f32>,
                      image_key: ImageKey,
                      image_rendering: ImageRendering) {
@@ -1848,7 +1881,10 @@ impl FrameBuilder {
             image_rendering: image_rendering,
         };
 
-        self.add_primitive(&rect, PrimitiveDetails::Image(prim));
+        self.add_primitive(&rect,
+                           clip_rect,
+                           clip,
+                           PrimitiveDetails::Image(prim));
     }
 
     fn cull_layers(&mut self,
@@ -2079,7 +2115,6 @@ impl FrameBuilder {
                 device_pixel_ratio: self.device_pixel_ratio,
                 frame_id: frame_id,
                 pipeline_auxiliary_lists: pipeline_auxiliary_lists,
-                clips: &self.clips,
                 alpha_batch_max_layers: self.config.max_prim_layers,
                 alpha_batch_max_tiles: self.config.max_prim_tiles,
             };

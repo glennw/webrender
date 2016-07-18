@@ -389,8 +389,7 @@ impl RenderTask {
                 let alloc_size = Size2D::new(size.width.0 as u32,
                                              size.height.0 as u32);
 
-                let alloc_origin = target.page_allocator
-                                         .allocate(&alloc_size, TextureFilter::Linear);
+                let alloc_origin = target.page_allocator.allocate(&alloc_size);
 
                 match alloc_origin {
                     Some(alloc_origin) => {

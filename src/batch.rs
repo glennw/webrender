@@ -89,7 +89,7 @@ impl RasterBatch {
             dest_texture_id == self.dest_texture_id;
 
         if batch_ok {
-            let origin = self.page_allocator.allocate(&dest_rect.size, TextureFilter::Linear);
+            let origin = self.page_allocator.allocate(&dest_rect.size);
 
             if let Some(origin) = origin {
                 let vertices = f(&Rect::new(Point2D::new(origin.x as f32,

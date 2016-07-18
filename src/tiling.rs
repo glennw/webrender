@@ -754,9 +754,11 @@ impl Primitive {
                                                               ctx.frame_id);
                 let uv_rect = image_info.uv_rect();
 
-                // TODO(gw): Need a general solution to handle multiple texture pages per tile in WR2!
-                assert!(batch.color_texture_id == TextureId(0) ||
-                        batch.color_texture_id == image_info.texture_id);
+                // TODO(gw): Tidy the support for batch breaks up...
+                if batch.color_texture_id != TextureId(0) &&
+                   batch.color_texture_id != image_info.texture_id {
+                    return false;
+                }
                 batch.color_texture_id = image_info.texture_id;
 
                 data.push(PackedImagePrimitive {

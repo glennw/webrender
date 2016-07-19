@@ -1848,6 +1848,15 @@ impl FrameBuilder {
             return
         }
 
+        // Fast path.
+        if blur_radius == 0.0 && spread_radius == 0.0 && clip_mode == BoxShadowClipMode::None {
+            self.add_solid_rectangle(&box_bounds,
+                                     clip_rect,
+                                     None,
+                                     color);
+            return;
+        }
+
         let bs_rect = compute_box_shadow_rect(box_bounds,
                                               box_offset,
                                               spread_radius);

@@ -1002,7 +1002,16 @@ impl Primitive {
             (&mut PrimitiveBatchData::Gradient(..), _) => false,
             (&mut PrimitiveBatchData::BoxShadows(ref mut data), &PrimitiveDetails::BoxShadow(ref details)) => {
                 let mut rects = Vec::new();
-                subtract_rect(&self.rect, &details.src_rect, &mut rects);
+                let inverted = match details.clip_mode {
+                    BoxShadowClipMode::None | BoxShadowClipMode::Outset => {
+                        subtract_rect(&self.rect, &details.src_rect, &mut rects);
+                        0.0
+                    }
+                    BoxShadowClipMode::Inset => {
+                        subtract_rect(&self.rect, &details.bs_rect, &mut rects);
+                        1.0
+                    }
+                };
 
                 for rect in rects {
                     data.push(PackedBoxShadowPrimitive {
@@ -1018,7 +1027,7 @@ impl Primitive {
 
                         border_radii: Point2D::new(details.border_radius, details.border_radius),
                         blur_radius: details.blur_radius,
-                        inverted: 0.0,
+                        inverted: inverted,
                         bs_rect: details.bs_rect,
                         src_rect: details.src_rect,
                     });
@@ -1865,9 +1874,16 @@ impl FrameBuilder {
                                             border_radius,
                                             blur_radius);
 
-        let prim_rect = Rect::new(metrics.tl_outer,
-                                  Size2D::new(metrics.br_outer.x - metrics.tl_outer.x,
-                                              metrics.br_outer.y - metrics.tl_outer.y));
+        let prim_rect = match clip_mode {
+            BoxShadowClipMode::Outset | BoxShadowClipMode::None => {
+                 Rect::new(metrics.tl_outer,
+                           Size2D::new(metrics.br_outer.x - metrics.tl_outer.x,
+                                       metrics.br_outer.y - metrics.tl_outer.y))
+            }
+            BoxShadowClipMode::Inset => {
+                *box_bounds
+            }
+        };
 
         let prim = BoxShadowPrimitive {
             metrics: metrics,

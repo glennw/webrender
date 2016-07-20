@@ -26,6 +26,14 @@ use webrender_traits::{ColorF, FontKey, ImageKey, ImageRendering, ComplexClipReg
 use webrender_traits::{BorderDisplayItem, BorderStyle, ItemRange, AuxiliaryLists, BorderRadius, BorderSide};
 use webrender_traits::{BoxShadowClipMode, PipelineId, ScrollLayerId};
 
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum GradientType {
+    Horizontal,
+    Vertical,
+    Rotated,
+}
+
 #[derive(Debug, Copy, Clone)]
 struct TaskIndex(usize);
 
@@ -518,6 +526,7 @@ impl RenderTask {
 pub const SCREEN_TILE_SIZE: i32 = 64;
 pub const RENDERABLE_CACHE_SIZE: DevicePixel = DevicePixel(2048);
 pub const MAX_LAYERS_PER_PASS: usize = 8;
+const MAX_STOPS_PER_ANGLE_GRADIENT: usize = 8;
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
@@ -727,7 +736,9 @@ struct ImagePrimitive {
 #[derive(Debug)]
 struct GradientPrimitive {
     stops_range: ItemRange,
-    dir: AxisDirection,
+    kind: GradientType,
+    start_point: Point2D<f32>,
+    end_point: Point2D<f32>,
 }
 
 #[derive(Debug)]
@@ -748,7 +759,8 @@ enum PackedPrimitive {
     Image(PackedImagePrimitive),
     Border(PackedBorderPrimitive),
     BoxShadow(PackedBoxShadowPrimitive),
-    Gradient(PackedGradientPrimitive),
+    AlignedGradient(PackedAlignedGradientPrimitive),
+    AngleGradient(PackedAngleGradientPrimitive),
 }
 
 struct PackedPrimList {
@@ -1083,30 +1095,35 @@ impl Primitive {
                 true
             }
             (&mut PrimitiveBatchData::Borders(..), _) => false,
-            (&mut PrimitiveBatchData::Gradient(ref mut data), &PrimitiveDetails::Gradient(ref details)) => {
+            (&mut PrimitiveBatchData::AlignedGradient(ref mut data), &PrimitiveDetails::Gradient(ref details)) => {
+                if details.kind == GradientType::Rotated {
+                    return false;
+                }
+
                 let stops = auxiliary_lists.gradient_stops(&details.stops_range);
                 for i in 0..(stops.len() - 1) {
                     let (prev_stop, next_stop) = (&stops[i], &stops[i + 1]);
                     let piece_origin;
                     let piece_size;
-                    match details.dir {
-                        AxisDirection::Horizontal => {
-                            let prev_x = util::lerp(self.rect.origin.x, self.rect.max_x(), prev_stop.offset);
-                            let next_x = util::lerp(self.rect.origin.x, self.rect.max_x(), next_stop.offset);
+                    match details.kind {
+                        GradientType::Horizontal => {
+                            let prev_x = util::lerp(details.start_point.x, details.end_point.x, prev_stop.offset);
+                            let next_x = util::lerp(details.start_point.x, details.end_point.x, next_stop.offset);
                             piece_origin = Point2D::new(prev_x, self.rect.origin.y);
                             piece_size = Size2D::new(next_x - prev_x, self.rect.size.height);
                         }
-                        AxisDirection::Vertical => {
-                            let prev_y = util::lerp(self.rect.origin.y, self.rect.max_y(), prev_stop.offset);
-                            let next_y = util::lerp(self.rect.origin.y, self.rect.max_y(), next_stop.offset);
+                        GradientType::Vertical => {
+                            let prev_y = util::lerp(details.start_point.y, details.end_point.y, prev_stop.offset);
+                            let next_y = util::lerp(details.start_point.y, details.end_point.y, next_stop.offset);
                             piece_origin = Point2D::new(self.rect.origin.x, prev_y);
                             piece_size = Size2D::new(self.rect.size.width, next_y - prev_y);
                         }
+                        GradientType::Rotated => unreachable!(),
                     }
 
                     let piece_rect = Rect::new(piece_origin, piece_size);
 
-                    data.push(PackedGradientPrimitive {
+                    data.push(PackedAlignedGradientPrimitive {
                         common: PackedPrimitiveInfo {
                             padding: 0,
                             tile_index: tile_index_in_ubo,
@@ -1118,13 +1135,52 @@ impl Primitive {
                         color0: prev_stop.color,
                         color1: next_stop.color,
                         padding: [0, 0, 0],
-                        dir: details.dir,
+                        kind: details.kind,
                     });
                 }
 
                 true
             }
-            (&mut PrimitiveBatchData::Gradient(..), _) => false,
+            (&mut PrimitiveBatchData::AlignedGradient(..), _) => false,
+            (&mut PrimitiveBatchData::AngleGradient(ref mut data), &PrimitiveDetails::Gradient(ref details)) => {
+                if details.kind != GradientType::Rotated {
+                    return false;
+                }
+
+                let src_stops = auxiliary_lists.gradient_stops(&details.stops_range);
+
+                if src_stops.len() > MAX_STOPS_PER_ANGLE_GRADIENT {
+                    println!("TODO: Angle gradients with > {} stops", MAX_STOPS_PER_ANGLE_GRADIENT);
+                } else {
+                    let mut stops: [f32; MAX_STOPS_PER_ANGLE_GRADIENT] = unsafe { mem::uninitialized() };
+                    let mut colors: [ColorF; MAX_STOPS_PER_ANGLE_GRADIENT] = unsafe { mem::uninitialized() };
+
+                    for (stop_index, stop) in src_stops.iter().enumerate() {
+                        stops[stop_index] = stop.offset;
+                        colors[stop_index] = stop.color;
+                    }
+
+                    data.push(PackedAngleGradientPrimitive {
+                        common: PackedPrimitiveInfo {
+                            padding: 0,
+                            tile_index: tile_index_in_ubo,
+                            layer_index: layer_index_in_ubo,
+                            part: PrimitivePart::Invalid,
+                            local_clip_rect: self.local_clip_rect,
+                        },
+                        local_rect: self.rect,
+                        padding: [0, 0, 0],
+                        start_point: details.start_point,
+                        end_point: details.end_point,
+                        stop_count: src_stops.len() as u32,
+                        stops: stops,
+                        colors: colors,
+                    });
+                }
+
+                true
+            }
+            (&mut PrimitiveBatchData::AngleGradient(..), _) => false,
             (&mut PrimitiveBatchData::BoxShadows(ref mut data), &PrimitiveDetails::BoxShadow(ref details)) => {
                 let mut rects = Vec::new();
                 let inverted = match details.clip_mode {
@@ -1335,13 +1391,27 @@ pub struct PackedImagePrimitive {
 }
 
 #[derive(Debug, Clone)]
-pub struct PackedGradientPrimitive {
+pub struct PackedAlignedGradientPrimitive {
     common: PackedPrimitiveInfo,
     local_rect: Rect<f32>,
     color0: ColorF,
     color1: ColorF,
-    dir: AxisDirection,
+    kind: GradientType,
     padding: [u32; 3],
+}
+
+// TODO(gw): Angle gradient only support 8 stops due
+//           to limits of interpolators. FIXME!
+#[derive(Debug, Clone)]
+pub struct PackedAngleGradientPrimitive {
+    common: PackedPrimitiveInfo,
+    local_rect: Rect<f32>,
+    start_point: Point2D<f32>,
+    end_point: Point2D<f32>,
+    stop_count: u32,
+    padding: [u32; 3],
+    colors: [ColorF; MAX_STOPS_PER_ANGLE_GRADIENT],
+    stops: [f32; MAX_STOPS_PER_ANGLE_GRADIENT],
 }
 
 #[derive(Debug, Clone)]
@@ -1445,9 +1515,10 @@ pub enum PrimitiveBatchData {
     BoxShadows(Vec<PackedBoxShadowPrimitive>),
     Text(Vec<PackedGlyphPrimitive>),
     Image(Vec<PackedImagePrimitive>),
-    Gradient(Vec<PackedGradientPrimitive>),
     Blend(Vec<PackedBlendPrimitive>),
     Composite(Vec<PackedCompositePrimitive>),
+    AlignedGradient(Vec<PackedAlignedGradientPrimitive>),
+    AngleGradient(Vec<PackedAngleGradientPrimitive>),
 }
 
 #[derive(Debug)]
@@ -1561,8 +1632,15 @@ impl PrimitiveBatch {
             PrimitiveDetails::Image(..) => {
                 PrimitiveBatchData::Image(Vec::new())
             }
-            PrimitiveDetails::Gradient(..) => {
-                PrimitiveBatchData::Gradient(Vec::new())
+            PrimitiveDetails::Gradient(ref details) => {
+                match details.kind {
+                    GradientType::Rotated => {
+                        PrimitiveBatchData::AngleGradient(Vec::new())
+                    }
+                    GradientType::Horizontal | GradientType::Vertical => {
+                        PrimitiveBatchData::AlignedGradient(Vec::new())
+                    }
+                }
             }
         };
 
@@ -2175,29 +2253,38 @@ impl FrameBuilder {
                         stops: ItemRange) {
         // Fast paths for axis-aligned gradients:
         if start_point.x == end_point.x {
-            let rect = Rect::new(Point2D::new(rect.origin.x, start_point.y),
-                                 Size2D::new(rect.size.width, end_point.y - start_point.y));
             let prim = GradientPrimitive {
                 stops_range: stops,
-                dir: AxisDirection::Vertical,
+                kind: GradientType::Vertical,
+                start_point: start_point,
+                end_point: end_point,
             };
             self.add_primitive(&rect,
                                clip_rect,
                                clip,
                                PrimitiveDetails::Gradient(prim));
         } else if start_point.y == end_point.y {
-            let rect = Rect::new(Point2D::new(start_point.x, rect.origin.y),
-                                 Size2D::new(end_point.x - start_point.x, rect.size.height));
             let prim = GradientPrimitive {
                 stops_range: stops,
-                dir: AxisDirection::Horizontal,
+                kind: GradientType::Horizontal,
+                start_point: start_point,
+                end_point: end_point,
             };
             self.add_primitive(&rect,
                                clip_rect,
                                clip,
                                PrimitiveDetails::Gradient(prim));
         } else {
-            //println!("TODO: Angle gradients! {:?} {:?} {:?}", start_point, end_point, stops);
+            let prim = GradientPrimitive {
+                stops_range: stops,
+                kind: GradientType::Rotated,
+                start_point: start_point,
+                end_point: end_point,
+            };
+            self.add_primitive(&rect,
+                               clip_rect,
+                               clip,
+                               PrimitiveDetails::Gradient(prim));
         }
     }
 

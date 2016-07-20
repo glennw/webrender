@@ -187,9 +187,10 @@ pub struct Renderer {
     ps_image: ProgramId,
     ps_border: ProgramId,
     ps_box_shadow: ProgramId,
-    ps_gradient: ProgramId,
     ps_blend: ProgramId,
     ps_composite: ProgramId,
+    ps_aligned_gradient: ProgramId,
+    ps_angle_gradient: ProgramId,
 
     ps_rectangle_transform: ProgramId,
     ps_image_transform: ProgramId,
@@ -204,9 +205,10 @@ pub struct Renderer {
     max_prim_images: usize,
     max_prim_borders: usize,
     max_prim_box_shadows: usize,
-    max_prim_gradients: usize,
     max_prim_blends: usize,
     max_prim_composites: usize,
+    max_prim_aligned_gradients: usize,
+    max_prim_angle_gradients: usize,
     max_composite_tiles: usize,
 
     notifier: Arc<Mutex<Option<Box<RenderNotifier>>>>,
@@ -261,9 +263,10 @@ impl Renderer {
         let max_prim_images = get_ubo_max_len::<tiling::PackedImagePrimitive>(max_ubo_size);
         let max_prim_borders = get_ubo_max_len::<tiling::PackedBorderPrimitive>(max_ubo_size);
         let max_prim_box_shadows = get_ubo_max_len::<tiling::PackedBoxShadowPrimitive>(max_ubo_size);
-        let max_prim_gradients = get_ubo_max_len::<tiling::PackedGradientPrimitive>(max_ubo_size);
         let max_prim_blends = get_ubo_max_len::<tiling::PackedBlendPrimitive>(max_ubo_size);
         let max_prim_composites = get_ubo_max_len::<tiling::PackedCompositePrimitive>(max_ubo_size);
+        let max_prim_aligned_gradients = get_ubo_max_len::<tiling::PackedAlignedGradientPrimitive>(max_ubo_size);
+        let max_prim_angle_gradients = get_ubo_max_len::<tiling::PackedAngleGradientPrimitive>(max_ubo_size);
 
         let ps_rectangle = create_prim_shader("ps_rectangle",
                                               &mut device,
@@ -295,11 +298,16 @@ impl Renderer {
                                                max_prim_tiles,
                                                max_prim_layers,
                                                max_prim_box_shadows);
-        let ps_gradient = create_prim_shader("ps_gradient",
-                                             &mut device,
-                                             max_prim_tiles,
-                                             max_prim_layers,
-                                             max_prim_gradients);
+        let ps_aligned_gradient = create_prim_shader("ps_gradient",
+                                                     &mut device,
+                                                     max_prim_tiles,
+                                                     max_prim_layers,
+                                                     max_prim_aligned_gradients);
+        let ps_angle_gradient = create_prim_shader("ps_angle_gradient",
+                                                   &mut device,
+                                                   max_prim_tiles,
+                                                   max_prim_layers,
+                                                   max_prim_angle_gradients);
 
         let ps_rectangle_transform = create_prim_shader("ps_rectangle_transform",
                                                         &mut device,
@@ -467,9 +475,10 @@ impl Renderer {
             ps_image: ps_image,
             ps_border: ps_border,
             ps_box_shadow: ps_box_shadow,
-            ps_gradient: ps_gradient,
             ps_blend: ps_blend,
             ps_composite: ps_composite,
+            ps_aligned_gradient: ps_aligned_gradient,
+            ps_angle_gradient: ps_angle_gradient,
             ps_rectangle_transform: ps_rectangle_transform,
             ps_image_transform: ps_image_transform,
             max_clear_tiles: max_clear_tiles,
@@ -479,9 +488,10 @@ impl Renderer {
             max_prim_images: max_prim_images,
             max_prim_borders: max_prim_borders,
             max_prim_box_shadows: max_prim_box_shadows,
-            max_prim_gradients: max_prim_gradients,
             max_prim_blends: max_prim_blends,
             max_prim_composites: max_prim_composites,
+            max_prim_aligned_gradients: max_prim_aligned_gradients,
+            max_prim_angle_gradients: max_prim_angle_gradients,
             max_composite_tiles: max_composite_tiles,
             composite_shaders: composite_shaders,
             u_direction: UniformLocation::invalid(),
@@ -1445,11 +1455,30 @@ impl Renderer {
                             gl::delete_buffers(&ubos);
                         }
                     }
-                    &PrimitiveBatchData::Gradient(ref ubo_data) => {
-                        self.device.bind_program(self.ps_gradient, &projection);
+                    &PrimitiveBatchData::AlignedGradient(ref ubo_data) => {
+                        self.device.bind_program(self.ps_aligned_gradient, &projection);
                         self.device.bind_vao(self.quad_vao_id);
 
-                        for chunk in ubo_data.chunks(self.max_prim_gradients) {
+                        for chunk in ubo_data.chunks(self.max_prim_aligned_gradients) {
+                            let ubos = gl::gen_buffers(1);
+                            let ubo = ubos[0];
+
+                            gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                            gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                            self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                            self.profile_counters.vertices.add(6 * chunk.len());
+                            self.profile_counters.draw_calls.inc();
+
+                            gl::delete_buffers(&ubos);
+                        }
+                    }
+                    &PrimitiveBatchData::AngleGradient(ref ubo_data) => {
+                        self.device.bind_program(self.ps_angle_gradient, &projection);
+                        self.device.bind_vao(self.quad_vao_id);
+
+                        for chunk in ubo_data.chunks(self.max_prim_angle_gradients) {
                             let ubos = gl::gen_buffers(1);
                             let ubo = ubos[0];
 

@@ -70,7 +70,6 @@ impl AlphaBatcher {
                                    tile_ubos.last().unwrap().len() == ctx.alpha_batch_max_tiles;
 
                 if need_new_ubo {
-                    //println!("add new tile ubo");
                     for i in 0..tile_to_ubo_map.len() {
                         tile_to_ubo_map[i] = None;
                     }
@@ -133,10 +132,6 @@ impl AlphaBatcher {
     }
 
     fn build(&mut self, ctx: &RenderTargetContext) {
-        //let _pf = util::ProfileScope::new("AlphaBatcher::build");
-
-        //println!("AB::build {} tasks {} layers ml {} mt {}", self.tasks.len(), ctx.layer_store.len(), ctx.alpha_batch_max_layers, ctx.alpha_batch_max_tiles);
-
         for _ in 0..ctx.layer_store.len() {
             self.layer_to_ubo_map.push(None);
         }
@@ -250,8 +245,6 @@ impl AlphaBatcher {
                 }
             }
         }
-
-        //println!("b={} l={} t={}", self.batches.len(), self.layer_ubos.len(), self.tile_ubos.len());
     }
 }
 
@@ -290,7 +283,6 @@ impl RenderTarget {
     }
 
     fn build(&mut self, ctx: &RenderTargetContext) {
-        //println!("RT build {} tasks", self.tasks.len());
         // Step through each task, adding to batches as appropriate.
 
         for task in self.tasks.drain(..) {
@@ -314,8 +306,6 @@ impl RenderTarget {
                 }
             }
         }
-
-        //println!("got {} AB!", self.alpha_batchers.len());
 
         for ab in &mut self.alpha_batchers {
             ab.build(ctx);
@@ -1736,23 +1726,19 @@ impl ScreenTile {
 
     #[inline(always)]
     fn push_layer(&mut self, sc_index: StackingContextIndex) {
-        //println!("{:?} push_layer {:?}", self.rect, sc_index);
         self.cmds.push(TileCommand::PushLayer(sc_index));
     }
 
     #[inline(always)]
     fn push_primitive(&mut self, prim_index: PrimitiveIndex) {
-        //println!("{:?} push_primitive {:?}", self.rect, prim_index);
         self.cmds.push(TileCommand::DrawPrimitive(prim_index));
         self.prim_count += 1;
     }
 
     #[inline(always)]
     fn pop_layer(&mut self, sc_index: StackingContextIndex) {
-        //println!("{:?} pop_layer {:?}", self.rect, sc_index);
         let last_cmd = *self.cmds.last().unwrap();
         if last_cmd == TileCommand::PushLayer(sc_index) {
-            //println!("remove {:?} {:?}", last_cmd, self.cmds);
             self.cmds.pop();
         } else {
             self.cmds.push(TileCommand::PopLayer);
@@ -1782,8 +1768,6 @@ impl ScreenTile {
 
                     let new_target = layer.opacity < 1.0;
 
-                    //println!("PushLayer {:?} nt={}", sc_index, new_target);
-
                     if new_target {
                         let prev_task = mem::replace(&mut current_task, AlphaRenderTask::new(self.rect));
                         alpha_task_stack.push(prev_task);
@@ -1795,8 +1779,6 @@ impl ScreenTile {
                     let layer = &layer_store[sc_index.0];
                     let should_pop = layer.opacity < 1.0;
 
-                    //println!("PopLayer {:?} sp={}", sc_index, should_pop);
-
                     if should_pop {
                         let mut prev_task = alpha_task_stack.pop().unwrap();
                         prev_task.items.push(AlphaRenderItem::Blend(prev_task.children.len(),
@@ -1807,7 +1789,6 @@ impl ScreenTile {
                 }
                 TileCommand::DrawPrimitive(prim_index) => {
                     let sc_index = *sc_stack.last().unwrap();
-                    //println!("  DrawPrimitive {:?}", sc_index);
                     current_task.items.push(AlphaRenderItem::Primitive(sc_index, prim_index));
                 }
             }
@@ -1877,7 +1858,6 @@ impl FrameBuilder {
             local_transform: transform,
             local_offset: offset,
             scroll_layer_id: scroll_layer_id,
-            //prim_buffer: Vec::new(),
             opacity: opacity,
             pipeline_id: pipeline_id,
             xf_rect: None,
@@ -2211,9 +2191,7 @@ impl FrameBuilder {
                                     stacking_context_index: StackingContextIndex,
                                     x_tile_count: i32,
                                     y_tile_count: i32,
-                                    screen_tiles: &mut Vec<ScreenTile>,
-                                    debug_rects: &mut Vec<DebugRect>,
-                                    level: i32) {
+                                    screen_tiles: &mut Vec<ScreenTile>) {
         let layer = &self.layer_store[stacking_context_index.0];
         if !layer.is_valid {
             return;
@@ -2249,9 +2227,7 @@ impl FrameBuilder {
                     self.assign_prims_to_screen_tiles(sc_index,
                                                       x_tile_count,
                                                       y_tile_count,
-                                                      screen_tiles,
-                                                      debug_rects,
-                                                      level+1);
+                                                      screen_tiles);
                 }
                 &StackingContextItem::Primitive(prim_index) => {
                     let prim = &self.prim_store[prim_index.0];
@@ -2325,8 +2301,6 @@ impl FrameBuilder {
                  frame_id: FrameId,
                  pipeline_auxiliary_lists: &HashMap<PipelineId, AuxiliaryLists, BuildHasherDefault<FnvHasher>>,
                  layer_map: &HashMap<ScrollLayerId, Layer, BuildHasherDefault<FnvHasher>>) -> Frame {
-        //println!("--- FB::build ---");
-
         let screen_rect = Rect::new(Point2D::zero(),
                                     Size2D::new(DevicePixel::new(self.screen_rect.size.width as f32, self.device_pixel_ratio),
                                                 DevicePixel::new(self.screen_rect.size.height as f32, self.device_pixel_ratio)));
@@ -2336,30 +2310,22 @@ impl FrameBuilder {
         let mut debug_rects = Vec::new();
         let (x_tile_count, y_tile_count, mut screen_tiles) = self.create_screen_tiles();
 
-        {
-        //let _pf = util::ProfileScope::new("assign_prims_to_screen_tiles");
+        if !self.layer_store.is_empty() {
+            let root_sc_index = StackingContextIndex(0);
+            self.assign_prims_to_screen_tiles(root_sc_index,
+                                              x_tile_count,
+                                              y_tile_count,
+                                              &mut screen_tiles);
+        }
 
-//println!(" --- assign_prims_to_screen_tiles --- ");
-        let root_sc_index = StackingContextIndex(0);
-
-        self.assign_prims_to_screen_tiles(root_sc_index,
-                                          x_tile_count,
-                                          y_tile_count,
-                                          &mut screen_tiles,
-                                          &mut debug_rects,
-                                          0);
-
-        //println!("-- start");
         if self.debug {
             for r in &screen_tiles {
-                //println!("r = {:?}", r);
                 debug_rects.push(DebugRect {
                     label: format!("{}|{}", r.cmds.len(), r.prim_count),
                     color: ColorF::new(1.0, 0.0, 0.0, 1.0),
                     rect: r.rect,
                 });
             }
-        }
         }
 
         self.build_resource_list(resource_cache,

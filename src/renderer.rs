@@ -92,11 +92,11 @@ fn get_ubo_max_len<T>(max_ubo_size: usize) -> usize {
     let item_size = mem::size_of::<T>();
     let max_items = max_ubo_size / item_size;
 
-    // TODO(gw): Clamping to 512 since some shader compilers
+    // TODO(gw): Clamping to 1024 since some shader compilers
     //           seem to go very slow when you have high
     //           constants for array lengths. Investigate
     //           whether this clamping actually hurts performance!
-    cmp::min(max_items, 512)
+    cmp::min(max_items, 1024)
 }
 
 fn create_composite_shader(name: &'static str,
@@ -188,6 +188,8 @@ pub struct Renderer {
     ps_border: ProgramId,
     ps_box_shadow: ProgramId,
     ps_gradient: ProgramId,
+    ps_blend: ProgramId,
+    ps_composite: ProgramId,
 
     ps_rectangle_transform: ProgramId,
     ps_image_transform: ProgramId,
@@ -203,6 +205,8 @@ pub struct Renderer {
     max_prim_borders: usize,
     max_prim_box_shadows: usize,
     max_prim_gradients: usize,
+    max_prim_blends: usize,
+    max_prim_composites: usize,
     max_composite_tiles: usize,
 
     notifier: Arc<Mutex<Option<Box<RenderNotifier>>>>,
@@ -258,6 +262,8 @@ impl Renderer {
         let max_prim_borders = get_ubo_max_len::<tiling::PackedBorderPrimitive>(max_ubo_size);
         let max_prim_box_shadows = get_ubo_max_len::<tiling::PackedBoxShadowPrimitive>(max_ubo_size);
         let max_prim_gradients = get_ubo_max_len::<tiling::PackedGradientPrimitive>(max_ubo_size);
+        let max_prim_blends = get_ubo_max_len::<tiling::PackedBlendPrimitive>(max_ubo_size);
+        let max_prim_composites = get_ubo_max_len::<tiling::PackedCompositePrimitive>(max_ubo_size);
 
         let ps_rectangle = create_prim_shader("ps_rectangle",
                                               &mut device,
@@ -305,6 +311,16 @@ impl Renderer {
                                                     max_prim_tiles,
                                                     max_prim_layers,
                                                     max_prim_images);
+        let ps_blend = create_prim_shader("ps_blend",
+                                          &mut device,
+                                          max_prim_tiles,
+                                          max_prim_layers,
+                                          max_prim_blends);
+        let ps_composite = create_prim_shader("ps_composite",
+                                              &mut device,
+                                              max_prim_tiles,
+                                              max_prim_layers,
+                                              max_prim_composites);
 
         let max_clear_tiles = get_ubo_max_len::<ClearTile>(max_ubo_size);
         let tile_clear_shader = create_clear_shader("ps_clear", &mut device, max_clear_tiles);
@@ -452,6 +468,8 @@ impl Renderer {
             ps_border: ps_border,
             ps_box_shadow: ps_box_shadow,
             ps_gradient: ps_gradient,
+            ps_blend: ps_blend,
+            ps_composite: ps_composite,
             ps_rectangle_transform: ps_rectangle_transform,
             ps_image_transform: ps_image_transform,
             max_clear_tiles: max_clear_tiles,
@@ -462,6 +480,8 @@ impl Renderer {
             max_prim_borders: max_prim_borders,
             max_prim_box_shadows: max_prim_box_shadows,
             max_prim_gradients: max_prim_gradients,
+            max_prim_blends: max_prim_blends,
+            max_prim_composites: max_prim_composites,
             max_composite_tiles: max_composite_tiles,
             composite_shaders: composite_shaders,
             u_direction: UniformLocation::invalid(),
@@ -1231,25 +1251,76 @@ impl Renderer {
             gl::clear(gl::COLOR_BUFFER_BIT);
         }
 
-        for alpha_task in &target.alpha_batch_tasks {
-            let misc_ubos = gl::gen_buffers(2);
-            let layer_ubo = misc_ubos[0];
-            let tile_ubo = misc_ubos[1];
+        for batcher in &target.alpha_batchers {
+            let layer_ubos = gl::gen_buffers(batcher.layer_ubos.len() as i32);
+            let tile_ubos = gl::gen_buffers(batcher.tile_ubos.len() as i32);
 
-            gl::bind_buffer(gl::UNIFORM_BUFFER, layer_ubo);
-            gl::buffer_data(gl::UNIFORM_BUFFER, &alpha_task.layer_ubo, gl::STATIC_DRAW);
-            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_LAYERS, layer_ubo);
+            for (ubo_data, ubo_id) in batcher.layer_ubos
+                                             .iter()
+                                             .zip(layer_ubos.iter()) {
+                gl::bind_buffer(gl::UNIFORM_BUFFER, *ubo_id);
+                gl::buffer_data(gl::UNIFORM_BUFFER, ubo_data, gl::STATIC_DRAW);
+            }
 
-            gl::bind_buffer(gl::UNIFORM_BUFFER, tile_ubo);
-            gl::buffer_data(gl::UNIFORM_BUFFER, &alpha_task.tile_ubo, gl::STATIC_DRAW);
-            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_PRIM_TILES, tile_ubo);
+            for (ubo_data, ubo_id) in batcher.tile_ubos
+                                             .iter()
+                                             .zip(tile_ubos.iter()) {
+                gl::bind_buffer(gl::UNIFORM_BUFFER, *ubo_id);
+                gl::buffer_data(gl::UNIFORM_BUFFER, ubo_data, gl::STATIC_DRAW);
+            }
 
             gl::enable(gl::BLEND);
             gl::blend_func(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
             gl::blend_equation(gl::FUNC_ADD);
 
-            for batch in &alpha_task.batches {
+            for batch in &batcher.batches {
                 match &batch.data {
+                    &PrimitiveBatchData::Blend(..) => {}
+                    _ => {
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_LAYERS, layer_ubos[batch.layer_ubo_index]);
+                        gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_PRIM_TILES, tile_ubos[batch.tile_ubo_index]);
+                    }
+                }
+
+                match &batch.data {
+                    &PrimitiveBatchData::Blend(ref ubo_data) => {
+                        self.device.bind_program(self.ps_blend, &projection);
+                        self.device.bind_vao(self.quad_vao_id);
+
+                        for chunk in ubo_data.chunks(self.max_prim_blends) {
+                            let ubos = gl::gen_buffers(1);
+                            let ubo = ubos[0];
+
+                            gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                            gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                            self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                            self.profile_counters.vertices.add(6 * chunk.len());
+                            self.profile_counters.draw_calls.inc();
+
+                            gl::delete_buffers(&ubos);
+                        }
+                    }
+                    &PrimitiveBatchData::Composite(ref ubo_data) => {
+                        self.device.bind_program(self.ps_composite, &projection);
+                        self.device.bind_vao(self.quad_vao_id);
+
+                        for chunk in ubo_data.chunks(self.max_prim_composites) {
+                            let ubos = gl::gen_buffers(1);
+                            let ubo = ubos[0];
+
+                            gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                            gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                            self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                            self.profile_counters.vertices.add(6 * chunk.len());
+                            self.profile_counters.draw_calls.inc();
+
+                            gl::delete_buffers(&ubos);
+                        }
+                    }
                     &PrimitiveBatchData::Rectangles(ref ubo_data) => {
                         let shader = match batch.transform_kind {
                             TransformedRectKind::AxisAligned => self.ps_rectangle,
@@ -1397,9 +1468,11 @@ impl Renderer {
             }
 
             gl::disable(gl::BLEND);
-            gl::delete_buffers(&misc_ubos);
+            gl::delete_buffers(&tile_ubos);
+            gl::delete_buffers(&layer_ubos);
         }
 
+/*
         for (key, tiles) in &target.composite_batches {
             let shader = self.composite_shaders[key.shader as usize];
             self.device.bind_program(shader, &projection);
@@ -1418,7 +1491,7 @@ impl Renderer {
 
                 gl::delete_buffers(&ubos);
             }
-        }
+        }*/
     }
 
     fn draw_tile_frame(&mut self,

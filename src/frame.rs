@@ -452,8 +452,7 @@ impl Frame {
                         let root_pipeline = SceneItemKind::Pipeline(root_pipeline);
                         self.flatten(root_pipeline,
                                      &parent_info,
-                                     &mut context,
-                                     0);
+                                     &mut context);
                     }
 
                     self.frame_builder = Some(frame_builder);
@@ -476,16 +475,15 @@ impl Frame {
                            scene_items: &[SceneItem],
                            info: &FlattenInfo,
                            context: &mut FlattenContext,
-                           _level: i32,
                            sc_rect: Rect<f32>,
-                           opacity: f32) {
+                           composition_ops: Vec<CompositionOp>) {
         context.builder.push_layer(sc_rect,
                                    info.current_clip_rect,
                                    info.local_transform,
-                                   opacity,
                                    info.pipeline_id,
                                    info.actual_scroll_layer_id,
-                                   info.offset_from_current_layer);
+                                   info.offset_from_current_layer,
+                                   composition_ops);
 
         for item in scene_items {
             match item.specific {
@@ -578,8 +576,7 @@ impl Frame {
                     let child = SceneItemKind::StackingContext(stacking_context, pipeline_id);
                     self.flatten(child,
                                  info,
-                                 context,
-                                 _level+1);
+                                 context);
                 }
                 SpecificSceneItem::Iframe(ref iframe_info) => {
                     let pipeline = context.scene
@@ -646,8 +643,7 @@ impl Frame {
 
                         self.flatten(iframe,
                                      &iframe_info,
-                                     context,
-                                     _level+1);
+                                     context);
                     }
                 }
             }
@@ -659,8 +655,7 @@ impl Frame {
     fn flatten(&mut self,
                scene_item: SceneItemKind,
                parent_info: &FlattenInfo,
-               context: &mut FlattenContext,
-               level: i32) {
+               context: &mut FlattenContext) {
         //let _pf = util::ProfileScope::new("  flatten");
 
         let (stacking_context, pipeline_id) = match scene_item {
@@ -824,28 +819,12 @@ impl Frame {
                     }
                 }
 
-                let mut opacity = 1.0;
-                for composition_op in composition_operations {
-                    match composition_op {
-                        CompositionOp::Filter(filter_op) => {
-                            match filter_op {
-                                LowLevelFilterOp::Opacity(o) => {
-                                    opacity = o.to_f32_px();
-                                }
-                                _ => {}
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
                 // TODO: Account for scroll offset with transforms!
                 self.add_items_to_target(&scene_items,
                                          &info,
                                          context,
-                                         level,
                                          stacking_context.overflow,
-                                         opacity);
+                                         composition_operations);
             }
         }
     }

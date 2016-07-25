@@ -9,7 +9,8 @@ use device::{TextureId, TextureFilter};
 use euclid::{Point2D, Rect, Matrix4D, Size2D, Point4D};
 use fnv::FnvHasher;
 use frame::FrameId;
-use internal_types::{AxisDirection, Glyph, GlyphKey, DevicePixel};
+use internal_types::{AxisDirection, Glyph, GlyphKey, DevicePixel, CompositionOp};
+use internal_types::{ANGLE_FLOAT_TO_FIXED, LowLevelFilterOp};
 use layer::Layer;
 use renderer::{BLUR_INFLATION_FACTOR};
 use resource_cache::ResourceCache;
@@ -113,11 +114,9 @@ impl AlphaBatcher {
                 let index = layer_ubo.len();
                 let sc = &ctx.layer_store[layer_index.0];
                 layer_ubo.push(PackedLayer {
-                    padding: [0, 0],
                     transform: sc.transform,
                     inv_transform: sc.transform.invert(),
                     screen_vertices: sc.xf_rect.as_ref().unwrap().vertices,
-                    blend_info: [sc.opacity, 0.0],
                 });
                 layer_to_ubo_map[layer_index.0] = Some(index);
                 index
@@ -146,6 +145,13 @@ impl AlphaBatcher {
             for (task_index, task) in self.tasks.iter_mut().enumerate() {
                 if let Some(next_item) = task.items.pop() {
                     match next_item {
+                        AlphaRenderItem::Composite(info) => {
+                            batch = Some(PrimitiveBatch::composite(task.child_rects[0],
+                                                                   task.child_rects[1],
+                                                                   task.target_rect,
+                                                                   info));
+                            break;
+                        }
                         AlphaRenderItem::Blend(child_index, opacity) => {
                             batch = Some(PrimitiveBatch::blend(task.child_rects[child_index],
                                                                task.target_rect,
@@ -193,6 +199,15 @@ impl AlphaBatcher {
                             match task.items.pop() {
                                 Some(next_item) => {
                                     match next_item {
+                                        AlphaRenderItem::Composite(info) => {
+                                            if !batch.pack_composite(task.child_rects[0],
+                                                                     task.child_rects[1],
+                                                                     task.target_rect,
+                                                                     info) {
+                                                task.items.push(next_item);
+                                                break;
+                                            }
+                                        }
                                         AlphaRenderItem::Blend(child_index, opacity) => {
                                             if !batch.pack_blend(task.child_rects[child_index],
                                                                  task.target_rect,
@@ -362,6 +377,7 @@ enum RenderTaskLocation {
 enum AlphaRenderItem {
     Primitive(StackingContextIndex, PrimitiveIndex),
     Blend(usize, f32),
+    Composite(PackedCompositeInfo),
 }
 
 #[derive(Debug)]
@@ -777,6 +793,7 @@ impl Primitive {
 
         match (&mut batch.data, &self.details) {
             (&mut PrimitiveBatchData::Blend(..), _) => false,
+            (&mut PrimitiveBatchData::Composite(..), _) => false,
             (&mut PrimitiveBatchData::Rectangles(ref mut data), &PrimitiveDetails::Rectangle(ref details)) => {
                 match self.complex_clip {
                     Some(..) => {
@@ -1252,8 +1269,6 @@ pub struct PackedLayer {
     transform: Matrix4D<f32>,
     inv_transform: Matrix4D<f32>,
     screen_vertices: [Point4D<f32>; 4],
-    blend_info: [f32; 2],
-    padding: [u32; 2],
 }
 
 #[derive(Debug)]
@@ -1363,6 +1378,63 @@ pub struct PackedBlendPrimitive {
     padding: [u32; 3],
 }
 
+#[derive(Debug, Copy, Clone)]
+struct PackedCompositeInfo {
+    kind: u32,
+    op: u32,
+    padding: [u32; 2],
+    amount: f32,
+    padding1: [u32; 3],
+}
+
+impl PackedCompositeInfo {
+    fn new(ops: &Vec<CompositionOp>) -> PackedCompositeInfo {
+        // TODO(gw): Support chained filters
+        let op = &ops[0];
+
+        let (kind, op, amount) = match op {
+            &CompositionOp::MixBlend(mode) => {
+                (0, mode as u32, 0.0)
+            }
+            &CompositionOp::Filter(filter) => {
+                let (filter_mode, amount) = match filter {
+                    LowLevelFilterOp::Blur(..) => (0, 0.0),
+                    LowLevelFilterOp::Contrast(amount) => (1, amount.to_f32_px()),
+                    LowLevelFilterOp::Grayscale(amount) => (2, amount.to_f32_px()),
+                    LowLevelFilterOp::HueRotate(angle) => (3, (angle as f32) / ANGLE_FLOAT_TO_FIXED),
+                    LowLevelFilterOp::Invert(amount) => (4, amount.to_f32_px()),
+                    LowLevelFilterOp::Saturate(amount) => (5, amount.to_f32_px()),
+                    LowLevelFilterOp::Sepia(amount) => (6, amount.to_f32_px()),
+                    LowLevelFilterOp::Brightness(_) |
+                    LowLevelFilterOp::Opacity(_) => {
+                        // Expressible using GL blend modes, so not handled
+                        // here.
+                        unreachable!()
+                    }
+                };
+
+                (1, filter_mode, amount)
+            }
+        };
+
+        PackedCompositeInfo {
+            kind: kind,
+            op: op,
+            padding: [0, 0],
+            amount: amount,
+            padding1: [0, 0, 0],
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PackedCompositePrimitive {
+    rect0: Rect<DevicePixel>,
+    rect1: Rect<DevicePixel>,
+    target_rect: Rect<DevicePixel>,
+    info: PackedCompositeInfo,
+}
+
 #[derive(Debug)]
 pub enum PrimitiveBatchData {
     Rectangles(Vec<PackedRectanglePrimitive>),
@@ -1373,6 +1445,7 @@ pub enum PrimitiveBatchData {
     Image(Vec<PackedImagePrimitive>),
     Gradient(Vec<PackedGradientPrimitive>),
     Blend(Vec<PackedBlendPrimitive>),
+    Composite(Vec<PackedCompositePrimitive>),
 }
 
 #[derive(Debug)]
@@ -1404,6 +1477,26 @@ impl PrimitiveBatch {
         }
     }
 
+    fn composite(first_src_rect: Rect<DevicePixel>,
+                 second_src_rect: Rect<DevicePixel>,
+                 target_rect: Rect<DevicePixel>,
+                 info: PackedCompositeInfo) -> PrimitiveBatch {
+        let composite = PackedCompositePrimitive {
+            rect0: first_src_rect,
+            rect1: second_src_rect,
+            target_rect: target_rect,
+            info: info,
+        };
+
+        PrimitiveBatch {
+            color_texture_id: TextureId(0),
+            transform_kind: TransformedRectKind::AxisAligned,
+            layer_ubo_index: 0,
+            tile_ubo_index: 0,
+            data: PrimitiveBatchData::Composite(vec![composite]),
+        }
+    }
+
     fn pack_blend(&mut self,
                   src_rect: Rect<DevicePixel>,
                   target_rect: Rect<DevicePixel>,
@@ -1415,6 +1508,26 @@ impl PrimitiveBatch {
                     padding: [0, 0, 0],
                     src_rect: src_rect,
                     target_rect: target_rect,
+                });
+
+                true
+            }
+            _ => false
+        }
+    }
+
+    fn pack_composite(&mut self,
+                      rect0: Rect<DevicePixel>,
+                      rect1: Rect<DevicePixel>,
+                      target_rect: Rect<DevicePixel>,
+                      info: PackedCompositeInfo) -> bool {
+        match &mut self.data {
+            &mut PrimitiveBatchData::Composite(ref mut ubo_data) => {
+                ubo_data.push(PackedCompositePrimitive {
+                    rect0: rect0,
+                    rect1: rect1,
+                    target_rect: target_rect,
+                    info: info,
                 });
 
                 true
@@ -1479,10 +1592,17 @@ struct StackingContext {
     local_offset: Point2D<f32>,
     items: Vec<StackingContextItem>,
     scroll_layer_id: ScrollLayerId,
-    opacity: f32,
     transform: Matrix4D<f32>,
     xf_rect: Option<TransformedRect>,
     is_valid: bool,
+    composition_ops: Vec<CompositionOp>,
+}
+
+#[derive(Debug, Copy, Clone)]
+enum CompositeKind {
+    None,
+    Simple(f32),
+    Complex(PackedCompositeInfo),
 }
 
 impl StackingContext {
@@ -1515,6 +1635,54 @@ impl StackingContext {
                 }
             }
         }
+    }
+
+    fn can_contribute_to_scene(&self) -> bool {
+        for op in &self.composition_ops {
+            match op {
+                &CompositionOp::Filter(filter_op) => {
+                    match filter_op {
+                        LowLevelFilterOp::Opacity(opacity) => {
+                            if opacity == Au(0) {
+                                return false
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        true
+    }
+
+    fn composite_kind(&self) -> CompositeKind {
+        if self.composition_ops.is_empty() {
+            return CompositeKind::None;
+        }
+
+        if self.composition_ops.len() == 1 {
+            match self.composition_ops.first().unwrap() {
+                &CompositionOp::Filter(filter_op) => {
+                    match filter_op {
+                        LowLevelFilterOp::Opacity(opacity) => {
+                            let opacity = opacity.to_f32_px();
+                            if opacity == 1.0 {
+                                return CompositeKind::None;
+                            } else {
+                                return CompositeKind::Simple(opacity);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let info = PackedCompositeInfo::new(&self.composition_ops);
+        CompositeKind::Complex(info)
     }
 }
 
@@ -1755,36 +1923,44 @@ impl ScreenTile {
         let mut current_task = AlphaRenderTask::new(self.rect);
         let mut alpha_task_stack = Vec::new();
 
-        //let mut alpha_tasks = Vec::new();
-        //let mut task_stack = Vec::new();
-
         for cmd in self.cmds {
             match cmd {
                 TileCommand::PushLayer(sc_index) => {
                     sc_stack.push(sc_index);
 
                     let layer = &layer_store[sc_index.0];
-                    debug_assert!(layer.opacity > 0.0);
-
-                    let new_target = layer.opacity < 1.0;
-
-                    if new_target {
-                        let prev_task = mem::replace(&mut current_task, AlphaRenderTask::new(self.rect));
-                        alpha_task_stack.push(prev_task);
+                    match layer.composite_kind() {
+                        CompositeKind::None => {}
+                        CompositeKind::Simple(..) | CompositeKind::Complex(..) => {
+                            let prev_task = mem::replace(&mut current_task, AlphaRenderTask::new(self.rect));
+                            alpha_task_stack.push(prev_task);
+                        }
                     }
                 }
                 TileCommand::PopLayer => {
                     let sc_index = sc_stack.pop().unwrap();
 
                     let layer = &layer_store[sc_index.0];
-                    let should_pop = layer.opacity < 1.0;
+                    match layer.composite_kind() {
+                        CompositeKind::None => {}
+                        CompositeKind::Simple(opacity) => {
+                            let mut prev_task = alpha_task_stack.pop().unwrap();
+                            prev_task.items.push(AlphaRenderItem::Blend(prev_task.children.len(),
+                                                                        opacity));
+                            prev_task.children.push(current_task);
+                            current_task = prev_task;
+                        }
+                        CompositeKind::Complex(info) => {
+                            let mut backdrop = alpha_task_stack.pop().unwrap();
 
-                    if should_pop {
-                        let mut prev_task = alpha_task_stack.pop().unwrap();
-                        prev_task.items.push(AlphaRenderItem::Blend(prev_task.children.len(),
-                                                                    layer.opacity));
-                        prev_task.children.push(current_task);
-                        current_task = prev_task;
+                            let mut composite_task = AlphaRenderTask::new(self.rect);
+                            composite_task.children.push(backdrop);
+                            composite_task.children.push(current_task);
+
+                            composite_task.items.push(AlphaRenderItem::Composite(info));
+
+                            current_task = composite_task;
+                        }
                     }
                 }
                 TileCommand::DrawPrimitive(prim_index) => {
@@ -1846,10 +2022,10 @@ impl FrameBuilder {
                       rect: Rect<f32>,
                       clip_rect: Rect<f32>,
                       transform: Matrix4D<f32>,
-                      opacity: f32,
                       pipeline_id: PipelineId,
                       scroll_layer_id: ScrollLayerId,
-                      offset: Point2D<f32>) {
+                      offset: Point2D<f32>,
+                      composition_operations: Vec<CompositionOp>) {
         let sc_index = StackingContextIndex(self.layer_store.len());
 
         let sc = StackingContext {
@@ -1858,11 +2034,11 @@ impl FrameBuilder {
             local_transform: transform,
             local_offset: offset,
             scroll_layer_id: scroll_layer_id,
-            opacity: opacity,
             pipeline_id: pipeline_id,
             xf_rect: None,
             transform: Matrix4D::identity(),
             is_valid: false,
+            composition_ops: composition_operations,
         };
         self.layer_store.push(sc);
 
@@ -2131,7 +2307,7 @@ impl FrameBuilder {
         // Build layer screen rects.
         // TODO(gw): This can be done earlier once update_layer_transforms() is fixed.
         for layer in &mut self.layer_store {
-            if layer.opacity > 0.0 {
+            if layer.can_contribute_to_scene() {
                 let scroll_layer = &layer_map[&layer.scroll_layer_id];
                 let offset_transform = Matrix4D::identity().translate(layer.local_offset.x,
                                                                       layer.local_offset.y,
@@ -2152,7 +2328,7 @@ impl FrameBuilder {
                                       .bounding_rect
                                       .intersects(&screen_rect);
 
-                layer.is_valid = is_visible && layer.opacity > 0.0;
+                layer.is_valid = is_visible;
             }
         }
     }

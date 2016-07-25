@@ -678,7 +678,7 @@ impl Frame {
         // Removing it fixes that but it needs a proper solution before
         // merging which will coming when the clipping branch merges!
 
-        let local_clip_rect = Some(MAX_RECT);
+        let local_clip_rect = Some(stacking_context.overflow);
         /*
         // FIXME(pcwalton): This is a not-great partial solution to servo/servo#10164. A better
         // solution would be to do this only if the transform consists of a translation+scale only

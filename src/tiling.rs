@@ -117,6 +117,7 @@ impl AlphaBatcher {
                     transform: sc.transform,
                     inv_transform: sc.transform.invert(),
                     screen_vertices: sc.xf_rect.as_ref().unwrap().vertices,
+                    world_clip_rect: sc.world_clip_rect.unwrap(),
                 });
                 layer_to_ubo_map[layer_index.0] = Some(index);
                 index
@@ -1268,6 +1269,7 @@ pub struct PackedTile {
 pub struct PackedLayer {
     transform: Matrix4D<f32>,
     inv_transform: Matrix4D<f32>,
+    world_clip_rect: Rect<DevicePixel>,
     screen_vertices: [Point4D<f32>; 4],
 }
 
@@ -1596,6 +1598,9 @@ struct StackingContext {
     xf_rect: Option<TransformedRect>,
     is_valid: bool,
     composition_ops: Vec<CompositionOp>,
+    local_clip_rect: Rect<f32>,
+    world_clip_rect: Option<Rect<DevicePixel>>,
+    parent: Option<StackingContextIndex>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -2007,7 +2012,6 @@ impl FrameBuilder {
 
         let prim = Primitive {
             rect: *rect,
-            //xf_rect: None,
             complex_clip: clip,
             local_clip_rect: *clip_rect,
             details: details,
@@ -2039,6 +2043,9 @@ impl FrameBuilder {
             transform: Matrix4D::identity(),
             is_valid: false,
             composition_ops: composition_operations,
+            local_clip_rect: clip_rect,
+            world_clip_rect: None,
+            parent: self.layer_stack.last().map(|index| *index),
         };
         self.layer_store.push(sc);
 
@@ -2306,7 +2313,16 @@ impl FrameBuilder {
 
         // Build layer screen rects.
         // TODO(gw): This can be done earlier once update_layer_transforms() is fixed.
-        for layer in &mut self.layer_store {
+        for layer_index in 0..self.layer_store.len() {
+            let parent_index = self.layer_store[layer_index].parent;
+            let parent_clip_rect = parent_index.map_or(Some(*screen_rect), |parent_index| {
+                self.layer_store[parent_index.0].world_clip_rect
+            });
+            if parent_clip_rect.is_none() {
+                continue;
+            }
+            let layer = &mut self.layer_store[layer_index];
+
             if layer.can_contribute_to_scene() {
                 let scroll_layer = &layer_map[&layer.scroll_layer_id];
                 let offset_transform = Matrix4D::identity().translate(layer.local_offset.x,
@@ -2322,13 +2338,20 @@ impl FrameBuilder {
                                                           &transform,
                                                           self.device_pixel_ratio));
 
-                let is_visible = layer.xf_rect
-                                      .as_ref()
-                                      .unwrap()
-                                      .bounding_rect
-                                      .intersects(&screen_rect);
+                let world_clip_rect = TransformedRect::new(&layer.local_clip_rect,
+                                                           &transform,
+                                                           self.device_pixel_ratio);
 
-                layer.is_valid = is_visible;
+                layer.world_clip_rect = world_clip_rect.bounding_rect
+                                                       .intersection(&parent_clip_rect.unwrap());
+
+                if layer.world_clip_rect.is_some() {
+                    layer.is_valid = layer.xf_rect
+                                          .as_ref()
+                                          .unwrap()
+                                          .bounding_rect
+                                          .intersects(&screen_rect);
+                }
             }
         }
     }

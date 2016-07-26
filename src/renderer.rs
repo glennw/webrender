@@ -1253,6 +1253,7 @@ impl Renderer {
             for batch in &batcher.batches {
                 match &batch.data {
                     &PrimitiveBatchData::Blend(..) => {}
+                    &PrimitiveBatchData::Composite(..) => {}
                     _ => {
                         gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_LAYERS, layer_ubos[batch.layer_ubo_index]);
                         gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_PRIM_TILES, tile_ubos[batch.tile_ubo_index]);

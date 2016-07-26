@@ -26,7 +26,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use texture_cache::{BorderType, TextureCache, TextureInsertOp};
 use tiling::{self, Frame, FrameBuilderConfig, PrimitiveBatchData, PackedTile};
-use tiling::{TransformedRectKind, RenderTarget, CompositeTile, ClearTile, PackedLayer};
+use tiling::{TransformedRectKind, RenderTarget, ClearTile, PackedLayer};
 use time::precise_time_ns;
 use webrender_traits::{ColorF, Epoch, PipelineId, RenderNotifier};
 use webrender_traits::{ImageFormat, MixBlendMode, RenderApiSender};
@@ -38,8 +38,7 @@ pub const MAX_RASTER_OP_SIZE: u32 = 2048;
 const UBO_BIND_LAYERS: u32 = 1;
 const UBO_BIND_CLEAR_TILES: u32 = 2;
 const UBO_BIND_PRIM_TILES: u32 = 3;
-const UBO_BIND_COMPOSITE_TILES: u32 = 4;
-const UBO_BIND_CACHE_ITEMS: u32 = 5;
+const UBO_BIND_CACHE_ITEMS: u32 = 4;
 
 #[derive(Clone, Copy)]
 struct VertexBuffer {

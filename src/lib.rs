@@ -10,10 +10,8 @@ extern crate lazy_static;
 #[macro_use]
 extern crate log;
 
-mod aabbtree;
 mod batch;
 mod batch_builder;
-mod bsptree;
 mod debug_font_data;
 mod debug_render;
 mod device;
@@ -23,7 +21,6 @@ mod geometry;
 mod internal_types;
 mod layer;
 mod profiler;
-mod quadtree;
 mod render_backend;
 mod resource_cache;
 mod resource_list;
@@ -72,6 +69,5 @@ extern crate time;
 extern crate webrender_traits;
 extern crate offscreen_gl_context;
 extern crate byteorder;
-extern crate bit_set;
 
 pub use renderer::{Renderer, RendererOptions};

@@ -7,13 +7,9 @@ use euclid::{Matrix4D, Point2D, Point3D, Point4D, Rect, Size2D};
 use fnv::FnvHasher;
 use geometry::ray_intersects_rect;
 use internal_types::{ANGLE_FLOAT_TO_FIXED, AxisDirection};
-use internal_types::{ChildLayerIndex, ClearInfo};
-use internal_types::{CompositeBatchInfo, CompositeBatchJob, CompositionOp};
-use internal_types::{DrawCall};
-use internal_types::{DrawCompositeBatchJob, DrawListGroupId};
-use internal_types::{DrawListId, DrawListItemIndex, LowLevelFilterOp, MAX_RECT};
-use internal_types::{RenderTargetId, RendererFrame};
-use internal_types::{StackingContextInfo, StackingContextIndex};
+use internal_types::{CompositionOp};
+use internal_types::{LowLevelFilterOp, MAX_RECT};
+use internal_types::{RendererFrame};
 use layer::{Layer, ScrollingState};
 use resource_cache::ResourceCache;
 use scene::{SceneStackingContext, ScenePipeline, Scene, SceneItem, SpecificSceneItem};
@@ -224,7 +220,7 @@ impl Frame {
         }
     }
 
-    pub fn reset(&mut self, resource_cache: &mut ResourceCache)
+    pub fn reset(&mut self)
                  -> HashMap<ScrollLayerId, ScrollingState, BuildHasherDefault<FnvHasher>> {
         self.pipeline_epoch_map.clear();
 
@@ -392,7 +388,7 @@ impl Frame {
                   device_pixel_ratio: f32) {
         if let Some(root_pipeline_id) = scene.root_pipeline_id {
             if let Some(root_pipeline) = scene.pipeline_map.get(&root_pipeline_id) {
-                let old_layer_scrolling_states = self.reset(resource_cache);
+                let old_layer_scrolling_states = self.reset();
 
                 self.pipeline_auxiliary_lists = scene.pipeline_auxiliary_lists.clone();
 
@@ -831,8 +827,8 @@ impl Frame {
 
     pub fn build(&mut self,
                  resource_cache: &mut ResourceCache,
-                 thread_pool: &mut scoped_threadpool::Pool,
-                 device_pixel_ratio: f32)
+                 _thread_pool: &mut scoped_threadpool::Pool,
+                 _device_pixel_ratio: f32)
                  -> RendererFrame {
         self.update_layer_transforms();
         let frame = self.build_frame(resource_cache);

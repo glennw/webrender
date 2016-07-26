@@ -854,36 +854,82 @@ impl Primitive {
             }
             (&mut PrimitiveBatchData::RectanglesClip(..), _) => false,
             (&mut PrimitiveBatchData::Image(ref mut data), &PrimitiveDetails::Image(ref details)) => {
-                let image_info = ctx.resource_cache.get_image(details.image_key,
-                                                              details.image_rendering,
-                                                              ctx.frame_id);
-                let uv_rect = image_info.uv_rect();
+                match self.complex_clip {
+                    Some(..) => {
+                        false
+                    }
+                    None => {
+                        let image_info = ctx.resource_cache.get_image(details.image_key,
+                                                                      details.image_rendering,
+                                                                      ctx.frame_id);
+                        let uv_rect = image_info.uv_rect();
 
-                // TODO(gw): Tidy the support for batch breaks up...
-                if batch.color_texture_id != TextureId(0) &&
-                   batch.color_texture_id != image_info.texture_id {
-                    return false;
+                        // TODO(gw): Tidy the support for batch breaks up...
+                        if batch.color_texture_id != TextureId(0) &&
+                           batch.color_texture_id != image_info.texture_id {
+                            return false;
+                        }
+                        batch.color_texture_id = image_info.texture_id;
+
+                        data.push(PackedImagePrimitive {
+                            common: PackedPrimitiveInfo {
+                                padding: 0,
+                                tile_index: tile_index_in_ubo,
+                                layer_index: layer_index_in_ubo,
+                                part: PrimitivePart::Invalid,
+                                local_clip_rect: self.local_clip_rect,
+                            },
+                            local_rect: self.rect,
+                            st0: uv_rect.top_left,
+                            st1: uv_rect.bottom_right,
+                            stretch_size: details.stretch_size,
+                            padding: [0, 0],
+                        });
+
+                        true
+                    }
                 }
-                batch.color_texture_id = image_info.texture_id;
-
-                data.push(PackedImagePrimitive {
-                    common: PackedPrimitiveInfo {
-                        padding: 0,
-                        tile_index: tile_index_in_ubo,
-                        layer_index: layer_index_in_ubo,
-                        part: PrimitivePart::Invalid,
-                        local_clip_rect: self.local_clip_rect,
-                    },
-                    local_rect: self.rect,
-                    st0: uv_rect.top_left,
-                    st1: uv_rect.bottom_right,
-                    stretch_size: details.stretch_size,
-                    padding: [0, 0],
-                });
-
-                true
             }
             (&mut PrimitiveBatchData::Image(..), _) => false,
+            (&mut PrimitiveBatchData::ImageClip(ref mut data), &PrimitiveDetails::Image(ref details)) => {
+                match self.complex_clip {
+                    Some(ref clip) => {
+                        let image_info = ctx.resource_cache.get_image(details.image_key,
+                                                                      details.image_rendering,
+                                                                      ctx.frame_id);
+                        let uv_rect = image_info.uv_rect();
+
+                        // TODO(gw): Tidy the support for batch breaks up...
+                        if batch.color_texture_id != TextureId(0) &&
+                           batch.color_texture_id != image_info.texture_id {
+                            return false;
+                        }
+                        batch.color_texture_id = image_info.texture_id;
+
+                        data.push(PackedImagePrimitiveClip {
+                            common: PackedPrimitiveInfo {
+                                padding: 0,
+                                tile_index: tile_index_in_ubo,
+                                layer_index: layer_index_in_ubo,
+                                part: PrimitivePart::Invalid,
+                                local_clip_rect: self.local_clip_rect,
+                            },
+                            local_rect: self.rect,
+                            st0: uv_rect.top_left,
+                            st1: uv_rect.bottom_right,
+                            stretch_size: details.stretch_size,
+                            padding: [0, 0],
+                            clip: (**clip).clone(),
+                        });
+
+                        true
+                    }
+                    None => {
+                        false
+                    }
+                }
+            }
+            (&mut PrimitiveBatchData::ImageClip(..), _) => false,
             (&mut PrimitiveBatchData::Borders(ref mut data), &PrimitiveDetails::Border(ref details)) => {
                 let inner_radius = BorderRadius {
                     top_left: Size2D::new(details.radius.top_left.width - details.left_width,
@@ -1391,6 +1437,17 @@ pub struct PackedImagePrimitive {
 }
 
 #[derive(Debug, Clone)]
+pub struct PackedImagePrimitiveClip {
+    common: PackedPrimitiveInfo,
+    local_rect: Rect<f32>,
+    st0: Point2D<f32>,
+    st1: Point2D<f32>,
+    stretch_size: Size2D<f32>,
+    padding: [u32; 2],
+    clip: Clip,
+}
+
+#[derive(Debug, Clone)]
 pub struct PackedAlignedGradientPrimitive {
     common: PackedPrimitiveInfo,
     local_rect: Rect<f32>,
@@ -1515,6 +1572,7 @@ pub enum PrimitiveBatchData {
     BoxShadows(Vec<PackedBoxShadowPrimitive>),
     Text(Vec<PackedGlyphPrimitive>),
     Image(Vec<PackedImagePrimitive>),
+    ImageClip(Vec<PackedImagePrimitiveClip>),
     Blend(Vec<PackedBlendPrimitive>),
     Composite(Vec<PackedCompositePrimitive>),
     AlignedGradient(Vec<PackedAlignedGradientPrimitive>),
@@ -1630,7 +1688,10 @@ impl PrimitiveBatch {
                 PrimitiveBatchData::Text(Vec::new())
             }
             PrimitiveDetails::Image(..) => {
-                PrimitiveBatchData::Image(Vec::new())
+                match prim.complex_clip {
+                    Some(..) => PrimitiveBatchData::ImageClip(Vec::new()),
+                    None => PrimitiveBatchData::Image(Vec::new()),
+                }
             }
             PrimitiveDetails::Gradient(ref details) => {
                 match details.kind {

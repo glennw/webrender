@@ -165,7 +165,6 @@ pub struct Renderer {
     u_direction: UniformLocation,
 
     ps_rectangle: ProgramId,
-    ps_rectangle_clip: ProgramId,
     ps_text: ProgramId,
     ps_image: ProgramId,
     ps_border: ProgramId,
@@ -174,6 +173,9 @@ pub struct Renderer {
     ps_composite: ProgramId,
     ps_aligned_gradient: ProgramId,
     ps_angle_gradient: ProgramId,
+
+    ps_rectangle_clip: ProgramId,
+    ps_image_clip: ProgramId,
 
     ps_rectangle_transform: ProgramId,
     ps_image_transform: ProgramId,
@@ -185,6 +187,7 @@ pub struct Renderer {
     max_prim_rectangles_clip: usize,
     max_prim_texts: usize,
     max_prim_images: usize,
+    max_prim_images_clip: usize,
     max_prim_borders: usize,
     max_prim_box_shadows: usize,
     max_prim_blends: usize,
@@ -242,6 +245,7 @@ impl Renderer {
         let max_prim_rectangles_clip = get_ubo_max_len::<tiling::PackedRectanglePrimitiveClip>(max_ubo_size);
         let max_prim_texts = get_ubo_max_len::<tiling::PackedGlyphPrimitive>(max_ubo_size);
         let max_prim_images = get_ubo_max_len::<tiling::PackedImagePrimitive>(max_ubo_size);
+        let max_prim_images_clip = get_ubo_max_len::<tiling::PackedImagePrimitiveClip>(max_ubo_size);
         let max_prim_borders = get_ubo_max_len::<tiling::PackedBorderPrimitive>(max_ubo_size);
         let max_prim_box_shadows = get_ubo_max_len::<tiling::PackedBoxShadowPrimitive>(max_ubo_size);
         let max_prim_blends = get_ubo_max_len::<tiling::PackedBlendPrimitive>(max_ubo_size);
@@ -269,6 +273,12 @@ impl Renderer {
                                           max_prim_tiles,
                                           max_prim_layers,
                                           max_prim_images);
+        let ps_image_clip = create_prim_shader("ps_image_clip",
+                                               &mut device,
+                                               max_prim_tiles,
+                                               max_prim_layers,
+                                               max_prim_images_clip);
+
         let ps_border = create_prim_shader("ps_border",
                                            &mut device,
                                            max_prim_tiles,
@@ -440,6 +450,7 @@ impl Renderer {
             tile_clear_shader: tile_clear_shader,
             ps_rectangle: ps_rectangle,
             ps_rectangle_clip: ps_rectangle_clip,
+            ps_image_clip: ps_image_clip,
             ps_text: ps_text,
             ps_image: ps_image,
             ps_border: ps_border,
@@ -455,6 +466,7 @@ impl Renderer {
             max_prim_rectangles_clip: max_prim_rectangles_clip,
             max_prim_texts: max_prim_texts,
             max_prim_images: max_prim_images,
+            max_prim_images_clip: max_prim_images_clip,
             max_prim_borders: max_prim_borders,
             max_prim_box_shadows: max_prim_box_shadows,
             max_prim_blends: max_prim_blends,
@@ -1351,6 +1363,26 @@ impl Renderer {
                         self.device.bind_color_texture(batch.color_texture_id);
 
                         for chunk in ubo_data.chunks(self.max_prim_images) {
+                            let ubos = gl::gen_buffers(1);
+                            let ubo = ubos[0];
+
+                            gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
+                            gl::buffer_data(gl::UNIFORM_BUFFER, &chunk, gl::STATIC_DRAW);
+                            gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_CACHE_ITEMS, ubo);
+
+                            self.device.draw_indexed_triangles_instanced_u16(6, chunk.len() as gl::GLint);
+                            self.profile_counters.vertices.add(6 * chunk.len());
+                            self.profile_counters.draw_calls.inc();
+
+                            gl::delete_buffers(&ubos);
+                        }
+                    }
+                    &PrimitiveBatchData::ImageClip(ref ubo_data) => {
+                        self.device.bind_program(self.ps_image_clip, &projection);
+                        self.device.bind_vao(self.quad_vao_id);
+                        self.device.bind_color_texture(batch.color_texture_id);
+
+                        for chunk in ubo_data.chunks(self.max_prim_images_clip) {
                             let ubos = gl::gen_buffers(1);
                             let ubo = ubos[0];
 

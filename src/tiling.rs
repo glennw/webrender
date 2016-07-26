@@ -2429,8 +2429,24 @@ impl FrameBuilder {
                                                            &transform,
                                                            self.device_pixel_ratio);
 
+                // TODO(gw): This gets the iframe reftests passing but is questionable.
+                //           Need to refactor the whole layer viewport_rect code once
+                //           WR2 lands since it can be simplified now.
+                let origin = Point2D::new(DevicePixel::new(scroll_layer.viewport_rect.origin.x,
+                                                           self.device_pixel_ratio),
+                                          DevicePixel::new(scroll_layer.viewport_rect.origin.y,
+                                                           self.device_pixel_ratio));
+                let size = Size2D::new(DevicePixel::new(scroll_layer.viewport_rect.size.width,
+                                                        self.device_pixel_ratio),
+                                       DevicePixel::new(scroll_layer.viewport_rect.size.height,
+                                                        self.device_pixel_ratio));
+                let viewport_rect = Rect::new(origin, size);
+
                 layer.world_clip_rect = world_clip_rect.bounding_rect
-                                                       .intersection(&parent_clip_rect.unwrap());
+                                                       .intersection(&parent_clip_rect.unwrap())
+                                                       .and_then(|cr| {
+                                                         cr.intersection(&viewport_rect)
+                                                       });
 
                 if layer.world_clip_rect.is_some() {
                     layer.is_valid = layer.xf_rect

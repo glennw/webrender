@@ -502,14 +502,11 @@ impl Frame {
                         };
 
                         match item.item {
-                            SpecificDisplayItem::WebGL(ref _info) => {
-                                println!("TODO: WebGL");
-                                /*
-                                builder.add_webgl_rectangle(&display_item.rect,
-                                                            resource_cache,
-                                                            &info.context_id,
-                                                            frame_id);
-                                                            */
+                            SpecificDisplayItem::WebGL(ref info) => {
+                                builder.add_webgl_rectangle(item.rect,
+                                                            &item.clip.main,
+                                                            clip,
+                                                            info.context_id);
                             }
                             SpecificDisplayItem::Image(ref info) => {
                                 builder.add_image(item.rect,

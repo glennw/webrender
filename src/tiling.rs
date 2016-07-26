@@ -2539,22 +2539,26 @@ impl FrameBuilder {
                                                       self.device_pixel_ratio);
                     let p_rect = &p_rect.bounding_rect;
 
-                    debug_assert!(rect_contains_rect(l_rect, p_rect));
+                    // TODO(gw): Ensure that certain primitives (such as background-image) only get
+                    //           assigned to tiles where their containing layer intersects with.
+                    //           Does this cause any problems / demonstrate other bugs?
+                    //           Restrict the tiles by clamping to the layer tile indices...
+                    //debug_assert!(rect_contains_rect(l_rect, p_rect), format!("layer={:?} prim={:?}", l_rect, p_rect));
 
                     let p_tile_x0 = p_rect.origin.x.0 / SCREEN_TILE_SIZE;
                     let p_tile_y0 = p_rect.origin.y.0 / SCREEN_TILE_SIZE;
                     let p_tile_x1 = (p_rect.origin.x.0 + p_rect.size.width.0 + SCREEN_TILE_SIZE - 1) / SCREEN_TILE_SIZE;
                     let p_tile_y1 = (p_rect.origin.y.0 + p_rect.size.height.0 + SCREEN_TILE_SIZE - 1) / SCREEN_TILE_SIZE;
 
-                    let p_tile_x0 = cmp::min(p_tile_x0, x_tile_count);
-                    let p_tile_x0 = cmp::max(p_tile_x0, 0);
-                    let p_tile_x1 = cmp::min(p_tile_x1, x_tile_count);
-                    let p_tile_x1 = cmp::max(p_tile_x1, 0);
+                    let p_tile_x0 = cmp::min(p_tile_x0, l_tile_x1);
+                    let p_tile_x0 = cmp::max(p_tile_x0, l_tile_x0);
+                    let p_tile_x1 = cmp::min(p_tile_x1, l_tile_x1);
+                    let p_tile_x1 = cmp::max(p_tile_x1, l_tile_x0);
 
-                    let p_tile_y0 = cmp::min(p_tile_y0, y_tile_count);
-                    let p_tile_y0 = cmp::max(p_tile_y0, 0);
-                    let p_tile_y1 = cmp::min(p_tile_y1, y_tile_count);
-                    let p_tile_y1 = cmp::max(p_tile_y1, 0);
+                    let p_tile_y0 = cmp::min(p_tile_y0, l_tile_y1);
+                    let p_tile_y0 = cmp::max(p_tile_y0, l_tile_y0);
+                    let p_tile_y1 = cmp::min(p_tile_y1, l_tile_y1);
+                    let p_tile_y1 = cmp::max(p_tile_y1, l_tile_y0);
 
                     for py in p_tile_y0..p_tile_y1 {
                         for px in p_tile_x0..p_tile_x1 {

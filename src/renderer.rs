@@ -99,23 +99,6 @@ fn get_ubo_max_len<T>(max_ubo_size: usize) -> usize {
     cmp::min(max_items, 1024)
 }
 
-fn create_composite_shader(name: &'static str,
-                           device: &mut Device,
-                           max_composite_tiles: usize) -> ProgramId {
-    let prefix = format!("#define WR_MAX_COMPOSITE_TILES {}", max_composite_tiles);
-
-    let program_id = device.create_program_with_prefix(name,
-                                                       "composite_shared",
-                                                       Some(prefix));
-
-    let tiles_index = gl::get_uniform_block_index(program_id.0, "Tiles");
-    gl::uniform_block_binding(program_id.0, tiles_index, UBO_BIND_COMPOSITE_TILES);
-
-    println!("CompositeShader {}: tiles={}/{}", name, tiles_index, max_composite_tiles);
-
-    program_id
-}
-
 fn create_prim_shader(name: &'static str,
                       device: &mut Device,
                       max_prim_tiles: usize,
@@ -195,7 +178,6 @@ pub struct Renderer {
     ps_rectangle_transform: ProgramId,
     ps_image_transform: ProgramId,
 
-    composite_shaders: [ProgramId; 8],
     tile_clear_shader: ProgramId,
 
     max_clear_tiles: usize,
@@ -209,7 +191,6 @@ pub struct Renderer {
     max_prim_composites: usize,
     max_prim_aligned_gradients: usize,
     max_prim_angle_gradients: usize,
-    max_composite_tiles: usize,
 
     notifier: Arc<Mutex<Option<Box<RenderNotifier>>>>,
 
@@ -332,18 +313,6 @@ impl Renderer {
 
         let max_clear_tiles = get_ubo_max_len::<ClearTile>(max_ubo_size);
         let tile_clear_shader = create_clear_shader("ps_clear", &mut device, max_clear_tiles);
-
-        let max_composite_tiles = get_ubo_max_len::<CompositeTile>(max_ubo_size);
-        let composite_shaders: [ProgramId; 8] = [
-            create_composite_shader("cs_p1", &mut device, max_composite_tiles),
-            create_composite_shader("cs_p2", &mut device, max_composite_tiles),
-            create_composite_shader("cs_p3", &mut device, max_composite_tiles),
-            create_composite_shader("cs_p4", &mut device, max_composite_tiles),
-            create_composite_shader("cs_p5", &mut device, max_composite_tiles),
-            create_composite_shader("cs_p6", &mut device, max_composite_tiles),
-            create_composite_shader("cs_p7", &mut device, max_composite_tiles),
-            create_composite_shader("cs_p8", &mut device, max_composite_tiles),
-        ];
 
         let texture_ids = device.create_texture_ids(1024);
         let mut texture_cache = TextureCache::new(texture_ids);
@@ -492,8 +461,6 @@ impl Renderer {
             max_prim_composites: max_prim_composites,
             max_prim_aligned_gradients: max_prim_aligned_gradients,
             max_prim_angle_gradients: max_prim_angle_gradients,
-            max_composite_tiles: max_composite_tiles,
-            composite_shaders: composite_shaders,
             u_direction: UniformLocation::invalid(),
             notifier: notifier,
             debug: debug_renderer,
@@ -1500,27 +1467,6 @@ impl Renderer {
             gl::delete_buffers(&tile_ubos);
             gl::delete_buffers(&layer_ubos);
         }
-
-/*
-        for (key, tiles) in &target.composite_batches {
-            let shader = self.composite_shaders[key.shader as usize];
-            self.device.bind_program(shader, &projection);
-
-            for batch in tiles.chunks(self.max_composite_tiles) {
-                let ubos = gl::gen_buffers(1);
-                let ubo = ubos[0];
-
-                gl::bind_buffer(gl::UNIFORM_BUFFER, ubo);
-                gl::buffer_data(gl::UNIFORM_BUFFER, &batch, gl::STATIC_DRAW);
-                gl::bind_buffer_base(gl::UNIFORM_BUFFER, UBO_BIND_COMPOSITE_TILES, ubo);
-
-                self.device.draw_indexed_triangles_instanced_u16(6, batch.len() as i32);
-                self.profile_counters.vertices.add(6 * batch.len());
-                self.profile_counters.draw_calls.inc();
-
-                gl::delete_buffers(&ubos);
-            }
-        }*/
     }
 
     fn draw_tile_frame(&mut self,

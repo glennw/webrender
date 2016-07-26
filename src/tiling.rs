@@ -9,7 +9,7 @@ use euclid::{Point2D, Rect, Matrix4D, Size2D, Point4D};
 use fnv::FnvHasher;
 use frame::FrameId;
 use internal_types::{Glyph, GlyphKey, DevicePixel, CompositionOp};
-use internal_types::{ANGLE_FLOAT_TO_FIXED, LowLevelFilterOp};
+use internal_types::{ANGLE_FLOAT_TO_FIXED, LowLevelFilterOp, RectUv};
 use layer::Layer;
 use renderer::{BLUR_INFLATION_FACTOR};
 use resource_cache::ResourceCache;
@@ -23,7 +23,7 @@ use texture_cache::{TexturePage};
 use util::{self, rect_from_points, rect_from_points_f, MatrixHelpers, subtract_rect};
 use webrender_traits::{ColorF, FontKey, ImageKey, ImageRendering, ComplexClipRegion};
 use webrender_traits::{BorderDisplayItem, BorderStyle, ItemRange, AuxiliaryLists, BorderRadius, BorderSide};
-use webrender_traits::{BoxShadowClipMode, PipelineId, ScrollLayerId};
+use webrender_traits::{BoxShadowClipMode, PipelineId, ScrollLayerId, WebGLContextId};
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -685,10 +685,14 @@ struct BorderPrimitive {
 }
 
 #[derive(Debug)]
+enum ImagePrimitiveKind {
+    Image(ImageKey, ImageRendering, Size2D<f32>),
+    WebGL(WebGLContextId),
+}
+
+#[derive(Debug)]
 struct ImagePrimitive {
-    image_key: ImageKey,
-    image_rendering: ImageRendering,
-    stretch_size: Size2D<f32>,
+    kind: ImagePrimitiveKind,
 }
 
 #[derive(Debug)]
@@ -787,17 +791,31 @@ impl Primitive {
                         false
                     }
                     None => {
-                        let image_info = ctx.resource_cache.get_image(details.image_key,
-                                                                      details.image_rendering,
-                                                                      ctx.frame_id);
-                        let uv_rect = image_info.uv_rect();
+                        let (texture_id, uv_rect, stretch_size) = match details.kind {
+                            ImagePrimitiveKind::Image(image_key, image_rendering, stretch_size) => {
+                                let info = ctx.resource_cache.get_image(image_key,
+                                                                        image_rendering,
+                                                                        ctx.frame_id);
+                                (info.texture_id, info.uv_rect(), stretch_size)
+                            }
+                            ImagePrimitiveKind::WebGL(context_id) => {
+                                let texture_id = ctx.resource_cache.get_webgl_texture(&context_id);
+                                let uv = RectUv {
+                                    top_left: Point2D::new(0.0, 1.0),
+                                    top_right: Point2D::new(1.0, 1.0),
+                                    bottom_left: Point2D::zero(),
+                                    bottom_right: Point2D::new(1.0, 0.0),
+                                };
+                                (texture_id, uv, self.rect.size)
+                            }
+                        };
 
                         // TODO(gw): Tidy the support for batch breaks up...
                         if batch.color_texture_id != TextureId(0) &&
-                           batch.color_texture_id != image_info.texture_id {
+                           batch.color_texture_id != texture_id {
                             return false;
                         }
-                        batch.color_texture_id = image_info.texture_id;
+                        batch.color_texture_id = texture_id;
 
                         data.push(PackedImagePrimitive {
                             common: PackedPrimitiveInfo {
@@ -810,7 +828,7 @@ impl Primitive {
                             local_rect: self.rect,
                             st0: uv_rect.top_left,
                             st1: uv_rect.bottom_right,
-                            stretch_size: details.stretch_size,
+                            stretch_size: stretch_size,
                             padding: [0, 0],
                         });
 
@@ -822,17 +840,31 @@ impl Primitive {
             (&mut PrimitiveBatchData::ImageClip(ref mut data), &PrimitiveDetails::Image(ref details)) => {
                 match self.complex_clip {
                     Some(ref clip) => {
-                        let image_info = ctx.resource_cache.get_image(details.image_key,
-                                                                      details.image_rendering,
-                                                                      ctx.frame_id);
-                        let uv_rect = image_info.uv_rect();
+                        let (texture_id, uv_rect, stretch_size) = match details.kind {
+                            ImagePrimitiveKind::Image(image_key, image_rendering, stretch_size) => {
+                                let info = ctx.resource_cache.get_image(image_key,
+                                                                        image_rendering,
+                                                                        ctx.frame_id);
+                                (info.texture_id, info.uv_rect(), stretch_size)
+                            }
+                            ImagePrimitiveKind::WebGL(context_id) => {
+                                let texture_id = ctx.resource_cache.get_webgl_texture(&context_id);
+                                let uv = RectUv {
+                                    top_left: Point2D::new(0.0, 1.0),
+                                    top_right: Point2D::new(1.0, 1.0),
+                                    bottom_left: Point2D::zero(),
+                                    bottom_right: Point2D::new(1.0, 0.0),
+                                };
+                                (texture_id, uv, self.rect.size)
+                            }
+                        };
 
                         // TODO(gw): Tidy the support for batch breaks up...
                         if batch.color_texture_id != TextureId(0) &&
-                           batch.color_texture_id != image_info.texture_id {
+                           batch.color_texture_id != texture_id {
                             return false;
                         }
-                        batch.color_texture_id = image_info.texture_id;
+                        batch.color_texture_id = texture_id;
 
                         data.push(PackedImagePrimitiveClip {
                             common: PackedPrimitiveInfo {
@@ -845,7 +877,7 @@ impl Primitive {
                             local_rect: self.rect,
                             st0: uv_rect.top_left,
                             st1: uv_rect.bottom_right,
-                            stretch_size: details.stretch_size,
+                            stretch_size: stretch_size,
                             padding: [0, 0],
                             clip: (**clip).clone(),
                         });
@@ -1637,8 +1669,12 @@ impl StackingContext {
                         PrimitiveDetails::Border(..) => {}
                         PrimitiveDetails::BoxShadow(..) => {}
                         PrimitiveDetails::Image(ref details) => {
-                           resource_list.add_image(details.image_key,
-                                                    details.image_rendering);
+                            match details.kind {
+                                ImagePrimitiveKind::Image(image_key, image_rendering, _) => {
+                                    resource_list.add_image(image_key, image_rendering);
+                                }
+                                ImagePrimitiveKind::WebGL(..) => {}
+                            }
                         }
                         PrimitiveDetails::Text(ref details) => {
                             let glyphs = auxiliary_lists.glyph_instances(&details.glyph_range);
@@ -2247,6 +2283,21 @@ impl FrameBuilder {
                            PrimitiveDetails::BoxShadow(prim));
     }
 
+    pub fn add_webgl_rectangle(&mut self,
+                               rect: Rect<f32>,
+                               clip_rect: &Rect<f32>,
+                               clip: Option<Box<Clip>>,
+                               context_id: WebGLContextId) {
+        let prim = ImagePrimitive {
+            kind: ImagePrimitiveKind::WebGL(context_id),
+        };
+
+        self.add_primitive(&rect,
+                           clip_rect,
+                           clip,
+                           PrimitiveDetails::Image(prim));
+    }
+
     pub fn add_image(&mut self,
                      rect: Rect<f32>,
                      clip_rect: &Rect<f32>,
@@ -2255,9 +2306,9 @@ impl FrameBuilder {
                      image_key: ImageKey,
                      image_rendering: ImageRendering) {
         let prim = ImagePrimitive {
-            image_key: image_key,
-            image_rendering: image_rendering,
-            stretch_size: stretch_size.clone(),
+            kind: ImagePrimitiveKind::Image(image_key,
+                                            image_rendering,
+                                            stretch_size.clone()),
         };
 
         self.add_primitive(&rect,

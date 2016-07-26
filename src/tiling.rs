@@ -4,12 +4,11 @@
 
 use app_units::{Au};
 use batch_builder::{BorderSideHelpers, BoxShadowMetrics};
-use bsptree::BspTree;
-use device::{TextureId, TextureFilter};
+use device::{TextureId};
 use euclid::{Point2D, Rect, Matrix4D, Size2D, Point4D};
 use fnv::FnvHasher;
 use frame::FrameId;
-use internal_types::{AxisDirection, Glyph, GlyphKey, DevicePixel, CompositionOp};
+use internal_types::{Glyph, GlyphKey, DevicePixel, CompositionOp};
 use internal_types::{ANGLE_FLOAT_TO_FIXED, LowLevelFilterOp};
 use layer::Layer;
 use renderer::{BLUR_INFLATION_FACTOR};
@@ -20,8 +19,8 @@ use std::collections::{HashMap};
 use std::f32;
 use std::mem;
 use std::hash::{BuildHasherDefault};
-use texture_cache::{TexturePage, TextureCacheItem};
-use util::{self, rect_from_points, rect_from_points_f, MatrixHelpers, subtract_rect, RectHelpers, rect_contains_rect};
+use texture_cache::{TexturePage};
+use util::{self, rect_from_points, rect_from_points_f, MatrixHelpers, subtract_rect};
 use webrender_traits::{ColorF, FontKey, ImageKey, ImageRendering, ComplexClipRegion};
 use webrender_traits::{BorderDisplayItem, BorderStyle, ItemRange, AuxiliaryLists, BorderRadius, BorderSide};
 use webrender_traits::{BoxShadowClipMode, PipelineId, ScrollLayerId};
@@ -54,7 +53,7 @@ pub struct AlphaBatcher {
 }
 
 impl AlphaBatcher {
-    fn new(ctx: &RenderTargetContext) -> AlphaBatcher {
+    fn new() -> AlphaBatcher {
         AlphaBatcher {
             layer_ubos: Vec::new(),
             tile_ubos: Vec::new(),
@@ -318,7 +317,7 @@ impl RenderTarget {
                                            self.alpha_batchers.last().unwrap().tasks.len() == 64;
 
                     if need_new_batcher {
-                        self.alpha_batchers.push(AlphaBatcher::new(ctx));
+                        self.alpha_batchers.push(AlphaBatcher::new());
                     }
 
                     self.alpha_batchers.last_mut().unwrap().add_task(AlphaBatchTask {
@@ -461,10 +460,10 @@ impl RenderTask {
 
         // Sanity check - can be relaxed if needed
         match self.location {
-            RenderTaskLocation::Fixed(rect) => {
+            RenderTaskLocation::Fixed(..) => {
                 debug_assert!(target_index == targets.len() - 1);
             }
-            RenderTaskLocation::Dynamic(origin, size) => {
+            RenderTaskLocation::Dynamic(..) => {
                 debug_assert!(target_index < targets.len() - 1);
             }
         }
@@ -508,10 +507,6 @@ impl RenderTask {
         true
     }
 
-    fn add_child_task(&mut self, task: RenderTask) {
-        self.children.push(task);
-    }
-
     fn max_depth(&self,
                  depth: usize,
                  max_depth: &mut usize) {
@@ -525,50 +520,13 @@ impl RenderTask {
 
 pub const SCREEN_TILE_SIZE: i32 = 64;
 pub const RENDERABLE_CACHE_SIZE: DevicePixel = DevicePixel(2048);
-pub const MAX_LAYERS_PER_PASS: usize = 8;
 const MAX_STOPS_PER_ANGLE_GRADIENT: usize = 8;
-
-#[allow(non_camel_case_types)]
-#[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
-pub enum CompositeShader {
-    Prim1,
-    Prim2,
-    Prim3,
-    Prim4,
-    Prim5,
-    Prim6,
-    Prim7,
-    Prim8,
-}
-
-impl CompositeShader {
-    fn from_cover(size: usize) -> CompositeShader {
-        match size {
-            1 => CompositeShader::Prim1,
-            2 => CompositeShader::Prim2,
-            3 => CompositeShader::Prim3,
-            4 => CompositeShader::Prim4,
-            5 => CompositeShader::Prim5,
-            6 => CompositeShader::Prim6,
-            7 => CompositeShader::Prim7,
-            8 => CompositeShader::Prim8,
-            _ => panic!("todo - other shader?"),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct DebugRect {
     pub label: String,
     pub color: ColorF,
     pub rect: Rect<DevicePixel>,
-}
-
-#[derive(Debug, Copy, Clone)]
-enum CacheSize {
-    None,
-    Fixed,
-    Variable(Size2D<DevicePixel>),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -751,23 +709,6 @@ enum PrimitiveDetails {
     BoxShadow(BoxShadowPrimitive),
 }
 
-#[derive(Clone)]
-enum PackedPrimitive {
-    Rectangle(PackedRectanglePrimitive),
-    RectangleClip(PackedRectanglePrimitiveClip),
-    Glyph(PackedGlyphPrimitive),
-    Image(PackedImagePrimitive),
-    Border(PackedBorderPrimitive),
-    BoxShadow(PackedBoxShadowPrimitive),
-    AlignedGradient(PackedAlignedGradientPrimitive),
-    AngleGradient(PackedAngleGradientPrimitive),
-}
-
-struct PackedPrimList {
-    color_texture_id: TextureId,
-    primitives: Vec<PackedPrimitive>,
-}
-
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct PrimitiveIndex(usize);
 
@@ -776,23 +717,10 @@ struct Primitive {
     rect: Rect<f32>,
     local_clip_rect: Rect<f32>,
     complex_clip: Option<Box<Clip>>,
-    //xf_rect: Option<TransformedRect>,
     details: PrimitiveDetails,
 }
 
 impl Primitive {
-    #[inline(always)]
-    fn is_opaque(&self) -> bool {
-        match self.details {
-            PrimitiveDetails::Rectangle(ref details) => {
-                details.color.a == 1.0
-            }
-            _ => {
-                false
-            }
-        }
-    }
-
     fn pack(&self,
             batch: &mut PrimitiveBatch,
             layer_index_in_ubo: u32,
@@ -941,10 +869,6 @@ impl Primitive {
                     bottom_right: Size2D::new(details.radius.bottom_right.width - details.right_width,
                                               details.radius.bottom_right.width - details.right_width),
                 };
-
-                let clip = Clip::from_border_radius(&self.rect,
-                                                    &details.radius,
-                                                    &inner_radius);
 
                 data.push(PackedBorderPrimitive {
                     common: PackedPrimitiveInfo {
@@ -1326,40 +1250,6 @@ enum PrimitivePart {
     Right,
 }
 
-#[derive(Debug, Clone)]
-pub struct CompositeTile {
-    pub screen_rect: Rect<DevicePixel>,
-    pub src_rects: [Rect<DevicePixel>; MAX_LAYERS_PER_PASS],
-    pub blend_info: [f32; MAX_LAYERS_PER_PASS],
-}
-
-impl CompositeTile {
-    fn new(rect: &Rect<DevicePixel>) -> CompositeTile {
-        CompositeTile {
-            screen_rect: *rect,
-            src_rects: unsafe { mem::uninitialized() },
-            blend_info: [ 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 ],
-        }
-    }
-}
-
-#[derive(Debug, Eq, PartialEq, Hash, Clone)]
-pub struct CompositeBatchKey {
-    pub shader: CompositeShader,
-    //pub samplers: [TextureId; MAX_PRIMS_PER_COMPOSITE],
-}
-
-impl CompositeBatchKey {
-    fn new(shader: CompositeShader,
-           //samplers: [TextureId; MAX_PRIMS_PER_COMPOSITE]
-           ) -> CompositeBatchKey {
-        CompositeBatchKey {
-            shader: shader,
-            //samplers: samplers,
-        }
-    }
-}
-
 // All Packed Primitives below must be 16 byte aligned.
 #[derive(Debug)]
 pub struct PackedTile {
@@ -1375,18 +1265,6 @@ pub struct PackedLayer {
     screen_vertices: [Point4D<f32>; 4],
 }
 
-#[derive(Debug)]
-pub struct PackedRenderable {
-    transform: Matrix4D<f32>,
-    local_rect: Rect<f32>,
-    cache_rect: Rect<DevicePixel>,
-    screen_rect: Rect<DevicePixel>,
-    st0: Point2D<f32>,
-    st1: Point2D<f32>,
-    offset: Point2D<f32>,
-    blend_info: [f32; 2],
-}
-
 #[derive(Debug, Clone)]
 pub struct PackedPrimitiveInfo {
     layer_index: u32,
@@ -1394,12 +1272,6 @@ pub struct PackedPrimitiveInfo {
     part: PrimitivePart,
     padding: u32,
     local_clip_rect: Rect<f32>,
-}
-
-#[derive(Debug)]
-pub struct PackedFixedRectangle {
-    common: PackedPrimitiveInfo,
-    color: ColorF,
 }
 
 #[derive(Debug, Clone)]
@@ -1930,64 +1802,10 @@ impl Clip {
             },
         }
     }
-
-    pub fn from_border_radius(rect: &Rect<f32>,
-                              outer_radius: &BorderRadius,
-                              inner_radius: &BorderRadius) -> Clip {
-        Clip {
-            rect: *rect,
-            top_left: ClipCorner {
-                rect: Rect::new(Point2D::new(rect.origin.x, rect.origin.y),
-                                Size2D::new(outer_radius.top_left.width, outer_radius.top_left.height)),
-                outer_radius_x: outer_radius.top_left.width,
-                outer_radius_y: outer_radius.top_left.height,
-                inner_radius_x: inner_radius.top_left.width,
-                inner_radius_y: inner_radius.top_left.height,
-            },
-            top_right: ClipCorner {
-                rect: Rect::new(Point2D::new(rect.origin.x + rect.size.width - outer_radius.top_right.width,
-                                             rect.origin.y),
-                                Size2D::new(outer_radius.top_right.width, outer_radius.top_right.height)),
-                outer_radius_x: outer_radius.top_right.width,
-                outer_radius_y: outer_radius.top_right.height,
-                inner_radius_x: inner_radius.top_right.width,
-                inner_radius_y: inner_radius.top_right.height,
-            },
-            bottom_left: ClipCorner {
-                rect: Rect::new(Point2D::new(rect.origin.x,
-                                             rect.origin.y + rect.size.height - outer_radius.bottom_left.height),
-                                Size2D::new(outer_radius.bottom_left.width, outer_radius.bottom_left.height)),
-                outer_radius_x: outer_radius.bottom_left.width,
-                outer_radius_y: outer_radius.bottom_left.height,
-                inner_radius_x: inner_radius.bottom_left.width,
-                inner_radius_y: inner_radius.bottom_left.height,
-            },
-            bottom_right: ClipCorner {
-                rect: Rect::new(Point2D::new(rect.origin.x + rect.size.width - outer_radius.bottom_right.width,
-                                             rect.origin.y + rect.size.height - outer_radius.bottom_right.height),
-                                Size2D::new(outer_radius.bottom_right.width, outer_radius.bottom_right.height)),
-                outer_radius_x: outer_radius.bottom_right.width,
-                outer_radius_y: outer_radius.bottom_right.height,
-                inner_radius_x: inner_radius.bottom_right.width,
-                inner_radius_y: inner_radius.bottom_right.height,
-            },
-        }
-    }
-}
-
-#[derive(Debug)]
-struct CompositeTileInfo {
-    layer_indices: Vec<Option<StackingContextIndex>>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct ScreenTileIndex(usize);
-
-enum ScreenTileCompileResult {
-    Clear,
-    Unhandled,
-    Ok,
-}
 
 #[derive(Debug)]
 struct CompiledScreenTile {
@@ -2005,12 +1823,6 @@ impl CompiledScreenTile {
             required_target_count: required_target_count,
         }
     }
-}
-
-#[derive(Debug)]
-struct PrimitiveKey {
-    sc_index: StackingContextIndex,
-    prim_index: PrimitiveIndex,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -2057,7 +1869,7 @@ impl ScreenTile {
         }
     }
 
-    fn compile(mut self,
+    fn compile(self,
                layer_store: &Vec<StackingContext>) -> Option<CompiledScreenTile> {
         if self.prim_count == 0 {
             return None;
@@ -2095,7 +1907,7 @@ impl ScreenTile {
                             current_task = prev_task;
                         }
                         CompositeKind::Complex(info) => {
-                            let mut backdrop = alpha_task_stack.pop().unwrap();
+                            let backdrop = alpha_task_stack.pop().unwrap();
 
                             let mut composite_task = AlphaRenderTask::new(self.rect);
                             composite_task.children.push(backdrop);

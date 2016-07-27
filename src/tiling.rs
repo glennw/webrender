@@ -2073,7 +2073,8 @@ impl FrameBuilder {
         match border.style {
             BorderStyle::Solid |
             BorderStyle::None |
-            BorderStyle::Dotted => {
+            BorderStyle::Dotted |
+            BorderStyle::Dashed => {
                 return true;
             }
             _ => {

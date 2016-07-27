@@ -1157,10 +1157,24 @@ impl Primitive {
                     let mut stops: [f32; MAX_STOPS_PER_ANGLE_GRADIENT] = unsafe { mem::uninitialized() };
                     let mut colors: [ColorF; MAX_STOPS_PER_ANGLE_GRADIENT] = unsafe { mem::uninitialized() };
 
-                    for (stop_index, stop) in src_stops.iter().enumerate() {
-                        stops[stop_index] = stop.offset;
-                        colors[stop_index] = stop.color;
-                    }
+                    let sx = details.start_point.x;
+                    let ex = details.end_point.x;
+
+                    let (sp, ep) = if sx > ex {
+                        for (stop_index, stop) in src_stops.iter().rev().enumerate() {
+                            stops[stop_index] = 1.0 - stop.offset;
+                            colors[stop_index] = stop.color;
+                        }
+
+                        (details.end_point, details.start_point)
+                    } else {
+                        for (stop_index, stop) in src_stops.iter().enumerate() {
+                            stops[stop_index] = stop.offset;
+                            colors[stop_index] = stop.color;
+                        }
+
+                        (details.start_point, details.end_point)
+                    };
 
                     data.push(PackedAngleGradientPrimitive {
                         common: PackedPrimitiveInfo {
@@ -1172,8 +1186,8 @@ impl Primitive {
                             local_rect: self.rect,
                         },
                         padding: [0, 0, 0],
-                        start_point: details.start_point,
-                        end_point: details.end_point,
+                        start_point: sp,
+                        end_point: ep,
                         stop_count: src_stops.len() as u32,
                         stops: stops,
                         colors: colors,

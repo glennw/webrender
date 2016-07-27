@@ -554,6 +554,7 @@ impl TransformedRect {
             TransformedRectKind::Complex
         };
 
+/*
         match kind {
             TransformedRectKind::AxisAligned => {
                 let v0 = transform.transform_point(&rect.origin);
@@ -582,6 +583,7 @@ impl TransformedRect {
                 }
             }
             TransformedRectKind::Complex => {
+                */
                 let vertices = [
                     transform.transform_point4d(&Point4D::new(rect.origin.x,
                                                               rect.origin.y,
@@ -628,8 +630,9 @@ impl TransformedRect {
                     bounding_rect: screen_rect_dp,
                     kind: kind,
                 }
+                /*
             }
-        }
+        }*/
     }
 }
 

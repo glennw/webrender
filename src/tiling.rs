@@ -2413,8 +2413,8 @@ impl FrameBuilder {
                 let transform = scroll_layer.world_transform
                                             .as_ref()
                                             .unwrap()
-                                            .mul(&offset_transform)
-                                            .mul(&layer.local_transform);
+                                            .mul(&layer.local_transform)
+                                            .mul(&offset_transform);
                 layer.transform = transform;
                 layer.xf_rect = Some(TransformedRect::new(&layer.local_rect,
                                                           &transform,

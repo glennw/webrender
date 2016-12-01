@@ -22,8 +22,9 @@ pub struct YamlFrameReader {
     frame_count: u32,
 
     builder: Option<DisplayListBuilder>,
-
     queue_depth: u32,
+
+    include_only: Vec<String>,
 }
 
 impl YamlFrameReader {
@@ -37,6 +38,7 @@ impl YamlFrameReader {
             builder: None,
 
             queue_depth: 1,
+            include_only: vec![],
         }
     }
 
@@ -45,6 +47,7 @@ impl YamlFrameReader {
 
         let mut y = YamlFrameReader::new(&yaml_file);
         y.queue_depth = args.value_of("queue").map(|s| s.parse::<u32>().unwrap()).unwrap_or(1);
+        y.include_only = args.values_of("include").map(|v| v.map(|s| s.to_owned()).collect()).unwrap_or(vec![]);
         y
     }
 
@@ -189,33 +192,26 @@ impl YamlFrameReader {
         };
 
         for ref item in yaml.as_vec().unwrap() {
-            // handle shorthand first
-            if !item["rect"].is_badvalue() {
-                self.handle_rect(wrench, &full_clip_region, &item);
+            // an expclit type can be skipped with some shorthand
+            let item_type =
+                if !item["rect"].is_badvalue() { "rect" }
+                else if !item["image"].is_badvalue() { "image" }
+                else if !item["text"].is_badvalue() { "text" }
+                else if !item["glyphs"].is_badvalue() { "glyphs" }
+                else if !item["stacking_context"].is_badvalue() { "stacking_context" }
+                else { item["type"].as_str().unwrap_or("unknown") };
+
+            if item_type != "stacking_context" &&
+               !self.include_only.is_empty() &&
+               !self.include_only.contains(&item_type.to_owned()) {
                 continue;
             }
 
-            if !item["image"].is_badvalue() {
-                self.handle_image(wrench, &full_clip_region, &item);
-                continue;
-            }
-
-            if !item["text"].is_badvalue() || !item["glyphs"].is_badvalue() {
-                self.handle_text(wrench, &full_clip_region, &item);
-                continue;
-            }
-
-            if !item["stacking_context"].is_badvalue() {
-                self.add_stacking_context_from_yaml(wrench, &item);
-                continue;
-            }
-
-            // handle 'type: xxx' longhand
-            match item["type"].as_str() {
-                Some("rect") => self.handle_rect(wrench, &full_clip_region, &item),
-                Some("image") => self.handle_image(wrench, &full_clip_region, &item),
-                Some("text") => self.handle_text(wrench, &full_clip_region, &item),
-                Some("stacking_context") => self.add_stacking_context_from_yaml(wrench, &item),
+            match item_type {
+                "rect" => self.handle_rect(wrench, &full_clip_region, &item),
+                "image" => self.handle_image(wrench, &full_clip_region, &item),
+                "text" | "glyphs" => self.handle_text(wrench, &full_clip_region, &item),
+                "stacking_context" => self.add_stacking_context_from_yaml(wrench, &item),
                 _ => {
                     //println!("Skipping {:?}", item);
                 }

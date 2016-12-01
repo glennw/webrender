@@ -315,7 +315,7 @@ impl Wrench {
             self.window_size = dim;
         }
 
-        gl::clear(gl::COLOR_BUFFER_BIT);
+        //gl::clear(gl::COLOR_BUFFER_BIT);
     }
 
     pub fn send_lists(&mut self, frame_number: u32, display_list: DisplayListBuilder) {

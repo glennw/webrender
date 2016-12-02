@@ -169,6 +169,7 @@ fn main() {
     let time_start = time::SteadyTime::now();
     let mut last = time::SteadyTime::now();
     let mut frame_count = 0;
+    let frames_between_dumps = 60;
 
     let mut min_time = time::Duration::max_value();
     let mut min_min_time = time::Duration::max_value();
@@ -176,9 +177,21 @@ fn main() {
     let mut max_max_time = time::Duration::min_value();
     let mut sum_time = time::Duration::zero();
 
+    let mut sum_block_avg_ms = time::Duration::zero();
+    let mut num_avg_ms_recorded = 0;
+    let mut warmed_up = false;
+
+    fn as_ms(f: time::Duration) -> f64 { f.num_microseconds().unwrap() as f64 / 1000. }
+    fn as_fps(f: time::Duration) -> f64 { (1000.*1000.) / f.num_microseconds().unwrap() as f64 }
+
     for event in window.wait_events() {
         if let Some(limit) = limit_seconds {
             if (time::SteadyTime::now() - time_start) >= limit {
+                let avg_ms = sum_block_avg_ms / num_avg_ms_recorded;
+                println!("min, avg, max ( ms): {:4.3}, {:4.3}, {:4.3}",
+                         as_ms(min_min_time), as_ms(avg_ms), as_ms(max_max_time));
+                println!("              (fps): {:4.3}, {:4.3}, {:4.3}",
+                         as_fps(min_min_time), as_fps(avg_ms), as_fps(max_max_time));
                 break;
             }
         }
@@ -208,22 +221,32 @@ fn main() {
                 let dur = now - last;
 
                 min_time = min(min_time, dur);
-                min_min_time = min(min_min_time, dur);
                 max_time = max(max_time, dur);
-                max_max_time = max(max_max_time, dur);
                 sum_time = sum_time + dur;
 
-                let as_ms = |f: time::Duration| { f.num_microseconds().unwrap() as f64 / 1000. };
+                if warmed_up {
+                    min_min_time = min(min_min_time, dur);
+                    max_max_time = max(max_max_time, dur);
+                }
 
                 frame_count += 1;
-                if frame_count == 60 {
+                if frame_count == frames_between_dumps {
                     let avg_time = sum_time / frame_count;
-                    println!("{:3.3} [{:3.3} .. {:3.3}]  -- {:4.3} fps  -- (global {:3.3} .. {:3.3})",
-                             as_ms(avg_time), as_ms(min_time), as_ms(max_time),
-                             1000.0 / as_ms(avg_time), as_ms(min_min_time), as_ms(max_max_time));
+                    if warmed_up {
+                        println!("{:3.3} [{:3.3} .. {:3.3}]  -- {:4.3} fps  -- (global {:3.3} .. {:3.3})",
+                                 as_ms(avg_time), as_ms(min_time), as_ms(max_time),
+                                 as_fps(avg_time), as_ms(min_min_time), as_ms(max_max_time));
+                        sum_block_avg_ms = sum_block_avg_ms + avg_time;
+                        num_avg_ms_recorded += 1;
+                    } else {
+                        println!("{:3.3} [{:3.3} .. {:3.3}]  -- {:4.3} fps",
+                                 as_ms(avg_time), as_ms(min_time), as_ms(max_time), as_fps(avg_time));
+                    }
+
                     min_time = time::Duration::max_value();
                     max_time = time::Duration::min_value();
                     sum_time = time::Duration::zero();
+                    warmed_up = true;
                     frame_count = 0;
                 }
 

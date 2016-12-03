@@ -15,6 +15,26 @@ use yaml_rust::{Yaml, YamlLoader};
 use wrench::{Wrench, WrenchThing, layout_simple_ascii};
 use {WHITE_COLOR, PLATFORM_DEFAULT_FACE_NAME};
 
+fn broadcast<T: Clone>(base_vals: &[T], num_items: usize) -> Vec<T>
+{
+    if base_vals.len() == num_items {
+        return base_vals.to_vec();
+    }
+
+    if base_vals.len() % num_items != 0 {
+        panic!("Cannot broadcast {} elements into {}", base_vals.len(), num_items);
+    }
+
+    let mut vals = vec![];
+    loop {
+        if vals.len() == num_items {
+            break;
+        }
+        vals.extend_from_slice(&base_vals);
+    }
+    vals
+}
+
 pub struct YamlFrameReader {
     frame_built: bool,
     yaml_path: PathBuf,
@@ -70,7 +90,7 @@ impl YamlFrameReader {
         self.add_stacking_context_from_yaml(wrench, &yaml["root"]);
     }
 
-    fn handle_rect(&mut self, wrench: &mut Wrench, clip_region: &ClipRegion, item: &Yaml)
+    fn handle_rect(&mut self, _: &mut Wrench, clip_region: &ClipRegion, item: &Yaml)
     {
         let rect = item[if item["type"].is_badvalue() { "rect" } else { "bounds" }]
             .as_rect().expect("rect type must have bounds");
@@ -79,6 +99,94 @@ impl YamlFrameReader {
         let builder = self.builder();
         let clip = item["clip"].as_clip_region(builder).unwrap_or(*clip_region);
         builder.push_rect(rect, clip, color);
+    }
+
+    fn handle_gradient(&mut self, _: &mut Wrench, clip_region: &ClipRegion, item: &Yaml)
+    {
+        let bounds = item["bounds"].as_rect().expect("gradient must have bounds");
+        let start = item["start"].as_point().expect("gradient must have start");
+        let end = item["end"].as_point().expect("gradient must have end");
+        let stops = if let Some(stops) = item["stops"].as_vec() {
+            // FIXME(vlad): I can't find the right way to do this with iterators;
+            // I want to take N elements at a time.
+            let num_stops = stops.len()/2;
+            let mut g_stops = Vec::with_capacity(num_stops);
+            for n in 0..num_stops {
+                g_stops.push(GradientStop {
+                    offset: stops[n*2+0].as_force_f32().expect("gradient stop offset is not f32"),
+                    color: stops[n*2+1].as_colorf().expect("gradient stop color is not color"),
+                });
+            }
+            g_stops
+        } else {
+            panic!("gradient must have stops array");
+        };
+
+        let builder = self.builder();
+        let clip = item["clip"].as_clip_region(builder).unwrap_or(*clip_region);
+        builder.push_gradient(bounds, clip, start, end, stops);
+    }
+
+    fn handle_border(&mut self, _: &mut Wrench, clip_region: &ClipRegion, item: &Yaml)
+    {
+        let bounds = item["bounds"].as_rect().expect("borders must have bounds");
+        let widths = item["width"].as_vec_f32().expect("borders must have width(s)");
+        let colors = item["color"].as_vec_colorf().expect("borders must have color(s)");
+        let styles = item["style"].as_vec_string().expect("borders must have style(s)");
+        let styles = styles.iter().map(|s| match s {
+            s if s == "none" => BorderStyle::None,
+            s if s == "solid" => BorderStyle::Solid,
+            s if s == "double" => BorderStyle::Double,
+            s if s == "dotted" => BorderStyle::Dotted,
+            s if s == "dashed" => BorderStyle::Dashed,
+            s if s == "hidden" => BorderStyle::Hidden,
+            s if s == "ridge" => BorderStyle::Ridge,
+            s if s == "inset" => BorderStyle::Inset,
+            s if s == "outset" => BorderStyle::Outset,
+            s if s == "groove" => BorderStyle::Groove,
+            s => {
+                panic!("Unknown border style '{}'", s);
+            }
+        }).collect::<Vec<BorderStyle>>();
+        let radius = item["radius"].as_border_radius().unwrap();
+
+        let widths = broadcast(&widths, 4);
+        let colors = broadcast(&colors, 4);
+        let styles = broadcast(&styles, 4);
+
+        let top = BorderSide { width: widths[0], color: colors[0], style: styles[0] };
+        let left = BorderSide { width: widths[1], color: colors[1], style: styles[1] };
+        let bottom = BorderSide { width: widths[2], color: colors[2], style: styles[2] };
+        let right = BorderSide { width: widths[3], color: colors[3], style: styles[3] };
+
+        let builder = self.builder();
+        let clip = item["clip"].as_clip_region(builder).unwrap_or(*clip_region);
+        builder.push_border(bounds, clip, left, top, right, bottom, radius);
+    }
+
+    fn handle_box_shadow(&mut self, wrench: &mut Wrench, clip_region: &ClipRegion, item: &Yaml)
+    {
+        let bounds = item["bounds"].as_rect().expect("box shadow must have bounds");
+        let box_bounds = item["box-bounds"].as_rect().expect("box shadow must have box-bounds");
+        let offset = item["offset"].as_point().unwrap_or(Point2D::zero());
+        let color = item["color"].as_colorf().unwrap_or(ColorF::new(0.0, 0.0, 0.0, 1.0));
+        let blur_radius = item["blur-radius"].as_force_f32().unwrap_or(0.0);
+        let spread_radius = item["spread-radius"].as_force_f32().unwrap_or(0.0);
+        let border_radius = item["border-radius"].as_force_f32().unwrap_or(0.0);
+        let clip_mode = if let Some(mode) = item.as_str() {
+            match mode {
+                s if s == "none" => BoxShadowClipMode::None,
+                s if s == "outset" => BoxShadowClipMode::Outset,
+                s if s == "inset" => BoxShadowClipMode::Inset,
+                s => panic!("Unknown box shadow clip mode {}", s),
+            }
+        } else {
+            BoxShadowClipMode::None
+        };
+        let builder = self.builder();
+        let clip = item["clip"].as_clip_region(builder).unwrap_or(*clip_region);
+        builder.push_box_shadow(bounds, clip, box_bounds, offset, color, blur_radius, spread_radius,
+                                border_radius, clip_mode);
     }
 
     fn handle_image(&mut self, wrench: &mut Wrench, clip_region: &ClipRegion, item: &Yaml)
@@ -212,6 +320,7 @@ impl YamlFrameReader {
                 "image" => self.handle_image(wrench, &full_clip_region, &item),
                 "text" | "glyphs" => self.handle_text(wrench, &full_clip_region, &item),
                 "stacking_context" => self.add_stacking_context_from_yaml(wrench, &item),
+                "border" => self.handle_border(wrench, &full_clip_region, &item),
                 _ => {
                     //println!("Skipping {:?}", item);
                 }

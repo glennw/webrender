@@ -67,6 +67,10 @@ fn size_node(parent: &mut Table, key: &str, value: &Size2D<f32>) {
     yaml_node(parent, key, Yaml::String(format!("{} {}", value.width, value.height)));
 }
 
+fn point_node(parent: &mut Table, key: &str, value: &Point2D<f32>) {
+    yaml_node(parent, key, Yaml::String(format!("{} {}", value.x, value.y)));
+}
+
 fn rect_node(parent: &mut Table, key: &str, value: &Rect<f32>) {
     yaml_node(parent, key, Yaml::String(format!("{} {} {} {}", value.origin.x, value.origin.y,
                                                                value.size.width, value.size.height)));
@@ -135,6 +139,24 @@ fn f32_vec_yaml(value: &[f32], check_unique: bool) -> Yaml {
 fn f32_vec_node(parent: &mut Table, key: &str, value: &[f32]) {
     yaml_node(parent, key,
                   f32_vec_yaml(value, false));
+}
+
+fn maybe_radius_yaml(radius: &BorderRadius) -> Option<Yaml> {
+    // see if we need to do anything
+    if radius.top_left == Size2D::zero() &&
+       radius.top_right == Size2D::zero() &&
+       radius.bottom_left == Size2D::zero() &&
+       radius.bottom_right == Size2D::zero()
+    {
+        return None;
+    }
+
+    let mut table = new_table();
+    size_node(&mut table, "top_left", &radius.top_left);
+    size_node(&mut table, "top_right", &radius.top_right);
+    size_node(&mut table, "bottom_left", &radius.bottom_left);
+    size_node(&mut table, "bottom_right", &radius.bottom_right);
+    Some(Yaml::Hash(table))
 }
 
 fn clip_node(parent: &mut Table, key: &str, value: &ClipRegion) {
@@ -403,16 +425,19 @@ impl YamlFrameWriter {
                     };
                 },
                 YuvImage(_) => {
+                    str_node(&mut v, "type", "yuv-image");
                     // TODO
                     println!("TODO YAML YuvImage");
                 },
                 WebGL(_) => {
+                    str_node(&mut v, "type", "webgl");
                     // TODO
                     println!("TODO YAML WebGL");
                     //rect_node(&mut v, "bounds", &base.rect);
                     //clip_node(&mut v, "clip", &base.clip);
                 },
                 Border(item) => {
+                    str_node(&mut v, "type", "border");
                     rect_node(&mut v, "bounds", &base.rect);
                     clip_node(&mut v, "clip", &base.clip);
                     let trbl = vec![&item.top, &item.right, &item.bottom, &item.left];
@@ -435,20 +460,42 @@ impl YamlFrameWriter {
                     yaml_node(&mut v, "width", f32_vec_yaml(&widths, true));
                     yaml_node(&mut v, "color", string_vec_yaml(&colors, true));
                     yaml_node(&mut v, "style", string_vec_yaml(&styles, true));
+                    if let Some(radius_node) = maybe_radius_yaml(&item.radius) {
+                        yaml_node(&mut v, "radius", radius_node);
+                    }
                 },
                 BoxShadow(item) => {
-                    // TODO
-                    println!("TODO YAML BoxShadow");
+                    str_node(&mut v, "type", "box-shadow");
                     rect_node(&mut v, "bounds", &base.rect);
                     clip_node(&mut v, "clip", &base.clip);
+                    rect_node(&mut v, "box-bounds", &item.box_bounds);
+                    point_node(&mut v, "offset", &item.offset);
+                    color_node(&mut v, "color", item.color);
+                    f32_node(&mut v, "blur-radius", item.blur_radius);
+                    f32_node(&mut v, "spread-radius", item.spread_radius);
+                    f32_node(&mut v, "border-radius", item.border_radius);
+                    let clip_mode = match item.clip_mode {
+                        BoxShadowClipMode::None => "none",
+                        BoxShadowClipMode::Outset => "outset",
+                        BoxShadowClipMode::Inset => "inset"
+                    };
+                    str_node(&mut v, "clip_mode", clip_mode);
                 },
                 Gradient(item) => {
-                    // TODO
-                    println!("TODO YAML Gradient");
+                    str_node(&mut v, "type", "gradient");
                     rect_node(&mut v, "bounds", &base.rect);
                     clip_node(&mut v, "clip", &base.clip);
+                    point_node(&mut v, "start", &item.start_point);
+                    point_node(&mut v, "end", &item.end_point);
+                    let mut stops = vec![];
+                    for stop in aux.gradient_stops(&item.stops) {
+                        stops.push(Yaml::Real(stop.offset.to_string()));
+                        stops.push(Yaml::String(color_to_string(stop.color)));
+                    }
+                    yaml_node(&mut v, "stops", Yaml::Array(stops));
                 },
                 Iframe(item) => {
+                    str_node(&mut v, "type", "iframe");
                     // TODO
                     println!("TODO YAML Iframe");
                 },
@@ -462,12 +509,12 @@ impl YamlFrameWriter {
                 },
                 PushScrollLayer(item) => {
                     // TODO
-                    println!("TODO PushScrollLayer");
-                    rect_node(&mut v, "bounds", &base.rect);
-                    clip_node(&mut v, "clip", &base.clip);
+                    //println!("TODO PushScrollLayer");
+                    //rect_node(&mut v, "bounds", &base.rect);
+                    //clip_node(&mut v, "clip", &base.clip);
                 },
                 PopScrollLayer => {
-                    println!("TODO PopScrollLayer");
+                    //println!("TODO PopScrollLayer");
                     // TODO
                 },
             }

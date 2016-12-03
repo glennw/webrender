@@ -19,17 +19,40 @@ pub trait YamlHelper {
     fn as_point(&self) -> Option<Point2D<f32>>;
     fn as_matrix4d(&self) -> Option<Matrix4D<f32>>;
     fn as_colorf(&self) -> Option<ColorF>;
+    fn as_vec_colorf(&self) -> Option<Vec<ColorF>>;
     fn as_complex_clip_rect(&self) -> Option<ComplexClipRegion>;
     fn as_clip_region(&self, &mut DisplayListBuilder) -> Option<ClipRegion>;
     fn as_px_to_au(&self) -> Option<Au>;
     fn as_pt_to_au(&self) -> Option<Au>;
+    fn as_vec_string(&self) -> Option<Vec<String>>;
+    fn as_border_radius(&self) -> Option<BorderRadius>;
+}
+
+fn string_to_color(color: &str) -> Option<ColorF> {
+    match color {
+        "red" => Some(ColorF::new(1.0, 0.0, 0.0, 1.0)),
+        "green" => Some(ColorF::new(0.0, 1.0, 0.0, 1.0)),
+        "blue" => Some(ColorF::new(0.0, 0.0, 1.0, 1.0)),
+        "white" => Some(ColorF::new(1.0, 1.0, 1.0, 1.0)),
+        "black" => Some(ColorF::new(0.0, 0.0, 0.0, 1.0)),
+        s => {
+            let items: Vec<f32> = s.split_whitespace().map(|s| f32::from_str(s).unwrap()).collect();
+            if items.len() == 3 {
+                Some(ColorF::new(items[0] / 255.0, items[1] / 255.0, items[2] / 255.0, 1.0))
+            } else if items.len() == 4 {
+                Some(ColorF::new(items[0] / 255.0, items[1] / 255.0, items[2] / 255.0, items[3]))
+            } else {
+                None
+            }
+        }
+    }
 }
 
 impl YamlHelper for Yaml {
     fn as_force_f32(&self) -> Option<f32> {
         match *self {
             Yaml::Integer(iv) => Some(iv as f32),
-            Yaml::String(ref sv) => match f32::from_str(sv.as_str()) {
+            Yaml::String(ref sv) | Yaml::Real(ref sv) => match f32::from_str(sv.as_str()) {
                 Ok(v) => Some(v),
                 Err(_) => None
             },
@@ -118,23 +141,32 @@ impl YamlHelper for Yaml {
     }
 
     fn as_colorf(&self) -> Option<ColorF> {
-        match self.as_str() {
-            None => None,
-            Some("red") => Some(ColorF::new(1.0, 0.0, 0.0, 1.0)),
-            Some("green") => Some(ColorF::new(0.0, 1.0, 0.0, 1.0)),
-            Some("blue") => Some(ColorF::new(0.0, 0.0, 1.0, 1.0)),
-            Some("white") => Some(ColorF::new(1.0, 1.0, 1.0, 1.0)),
-            Some("black") => Some(ColorF::new(0.0, 0.0, 0.0, 1.0)),
-            _ => {
-                let mut nums = self.as_vec_f32().unwrap();
-                if nums.len() != 3 && nums.len() != 4 {
-                    panic!("color expected a color name, or 3-4 floats; got '{:?}'", self);
-                }
+        if let Some(mut nums) = self.as_vec_f32() {
+            if nums.len() != 3 && nums.len() != 4 {
+                panic!("color expected a color name, or 3-4 floats; got '{:?}'", self);
+            }
 
-                if nums.len() == 3 {
-                    nums.push(1.0);
-                }
-                Some(ColorF::new(nums[0] / 255.0, nums[1] / 255.0, nums[2] / 255.0, nums[3]))
+            if nums.len() == 3 {
+                nums.push(1.0);
+            }
+            return Some(ColorF::new(nums[0] / 255.0, nums[1] / 255.0, nums[2] / 255.0, nums[3]));
+        }
+
+        if let Some(s) = self.as_str() {
+            string_to_color(s)
+        } else {
+            None
+        }
+    }
+
+    fn as_vec_colorf(&self) -> Option<Vec<ColorF>> {
+        if let Some(v) = self.as_vec() {
+            Some(v.iter().map(|v| v.as_colorf().unwrap()).collect())
+        } else {
+            if let Some(color) = self.as_colorf() {
+                Some(vec![color])
+            } else {
+                None
             }
         }
     }
@@ -193,5 +225,28 @@ impl YamlHelper for Yaml {
         }
 
         Some(builder.new_clip_region(&bounds, clips, None))
+    }
+
+    fn as_vec_string(&self) -> Option<Vec<String>> {
+        if let Some(v) = self.as_vec() {
+            Some(v.iter().map(|v| v.as_str().unwrap().to_owned()).collect())
+        } else if let Some(s) = self.as_str() {
+            Some(vec![s.to_owned()])
+        } else {
+            None
+        }
+    }
+
+    fn as_border_radius(&self) -> Option<BorderRadius> {
+        let top_left = self["top_right"].as_size().unwrap_or(Size2D::zero());
+        let top_right = self["top_right"].as_size().unwrap_or(Size2D::zero());
+        let bottom_left = self["bottom_left"].as_size().unwrap_or(Size2D::zero());
+        let bottom_right = self["bottom_right"].as_size().unwrap_or(Size2D::zero());
+        Some(BorderRadius {
+            top_left: top_left,
+            top_right: top_right,
+            bottom_left: bottom_left,
+            bottom_right: bottom_right,
+        })
     }
 }

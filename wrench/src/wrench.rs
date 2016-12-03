@@ -198,6 +198,9 @@ impl Wrench {
         };
 
         wrench.set_title("start");
+        // there's a "frame 0" that webrender itself renders; push this to
+        // not confuse our notifier
+        wrench.frame_start_sender.push(time::SteadyTime::now());
         wrench.api.set_root_pipeline(wrench.root_pipeline_id);
 
         wrench
@@ -318,8 +321,12 @@ impl Wrench {
         //gl::clear(gl::COLOR_BUFFER_BIT);
     }
 
-    pub fn send_lists(&mut self, frame_number: u32, display_list: DisplayListBuilder) {
+    pub fn begin_frame(&mut self) {
         self.frame_start_sender.push(time::SteadyTime::now());
+    }
+
+    pub fn send_lists(&mut self, frame_number: u32, display_list: DisplayListBuilder) {
+        self.begin_frame();
 
         let root_background_color = ColorF::new(0.3, 0.0, 0.0, 1.0);
         self.api.set_root_display_list(root_background_color,
@@ -334,7 +341,7 @@ impl Wrench {
     }
 
     pub fn refresh(&mut self) {
-        self.frame_start_sender.push(time::SteadyTime::now());
+        self.begin_frame();
         self.api.generate_frame();
     }
 

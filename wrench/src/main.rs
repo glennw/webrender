@@ -31,7 +31,6 @@ use gleam::gl;
 use glutin::{ElementState, VirtualKeyCode};
 use std::path::PathBuf;
 use std::cmp::{min, max};
-use std::ffi::CStr;
 use webrender_traits::*;
 
 mod wrench;
@@ -61,20 +60,6 @@ lazy_static! {
 }
 
 pub static mut CURRENT_FRAME_NUMBER: u32 = 0;
-
-enum ThingKind {
-    YamlFile(YamlFrameReader),
-    BinaryFile(BinaryFrameReader),
-}
-
-impl ThingKind {
-    fn thing<'a>(&'a mut self) -> &'a mut WrenchThing {
-        match *self {
-            ThingKind::YamlFile(ref mut f) => &mut *f,
-            ThingKind::BinaryFile(ref mut f) => &mut *f,
-        }
-    }
-}
 
 fn make_window(size: Size2D<u32>,
                dp_ratio: Option<f32>,
@@ -138,9 +123,9 @@ fn main() {
 
     let mut thing =
         if let Some(subargs) = args.subcommand_matches("show") {
-            ThingKind::YamlFile(YamlFrameReader::new_from_args(subargs))
+            Box::new(YamlFrameReader::new_from_args(subargs)) as Box<WrenchThing>
         } else if let Some(subargs) = args.subcommand_matches("replay") {
-            ThingKind::BinaryFile(BinaryFrameReader::new_from_args(subargs))
+            Box::new(BinaryFrameReader::new_from_args(subargs)) as Box<WrenchThing>
         } else {
             panic!("Should never have gotten here");
         };
@@ -149,9 +134,7 @@ fn main() {
     let mut profiler = false;
     let mut do_loop = false;
 
-    let queue_frames = thing.thing().queue_frames();
-    for _ in 0..queue_frames {
-        let thing = thing.thing();
+    for _ in 0..thing.queue_frames() {
         let (width, height) = window.get_inner_size().unwrap();
         let dim = Size2D::new(width, height);
         wrench.update(dim);
@@ -162,7 +145,6 @@ fn main() {
         }
 
         wrench.render();
-        //gl::flush();
         window.swap_buffers().ok();
     }
 
@@ -196,7 +178,6 @@ fn main() {
             }
         }
 
-        let thing = thing.thing();
         match event {
             glutin::Event::Awakened => {
                 let (width, height) = window.get_inner_size().unwrap();
@@ -213,8 +194,6 @@ fn main() {
                 }
 
                 wrench.render();
-
-                //gl::flush();
                 window.swap_buffers().ok();
 
                 let now = time::SteadyTime::now();

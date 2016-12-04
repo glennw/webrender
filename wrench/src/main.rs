@@ -64,8 +64,13 @@ pub static mut CURRENT_FRAME_NUMBER: u32 = 0;
 
 fn percentile(values: &[f64], pct_int: u32) -> f64 {
     let pct = pct_int as f32 / 100.;
-    let index = f32::floor(values.len() as f32 * pct) as usize;
-    (values[index] + values[index+1]) / 2.
+    let index_f = (values.len()-1) as f32 * pct;
+    let index = f32::floor(index_f) as usize;
+    if index == index_f as usize {
+        values[index]
+    } else {
+        (values[index] + values[index+1]) / 2.
+    }
 }
 
 fn make_window(size: Size2D<u32>,

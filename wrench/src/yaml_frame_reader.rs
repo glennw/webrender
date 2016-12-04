@@ -21,7 +21,7 @@ fn broadcast<T: Clone>(base_vals: &[T], num_items: usize) -> Vec<T>
         return base_vals.to_vec();
     }
 
-    if base_vals.len() % num_items != 0 {
+    if num_items % base_vals.len() != 0 {
         panic!("Cannot broadcast {} elements into {}", base_vals.len(), num_items);
     }
 
@@ -167,12 +167,12 @@ impl YamlFrameReader {
     fn handle_box_shadow(&mut self, wrench: &mut Wrench, clip_region: &ClipRegion, item: &Yaml)
     {
         let bounds = item["bounds"].as_rect().expect("box shadow must have bounds");
-        let box_bounds = item["box-bounds"].as_rect().expect("box shadow must have box-bounds");
+        let box_bounds = item["box_bounds"].as_rect().expect("box shadow must have box_bounds");
         let offset = item["offset"].as_point().unwrap_or(Point2D::zero());
         let color = item["color"].as_colorf().unwrap_or(ColorF::new(0.0, 0.0, 0.0, 1.0));
-        let blur_radius = item["blur-radius"].as_force_f32().unwrap_or(0.0);
-        let spread_radius = item["spread-radius"].as_force_f32().unwrap_or(0.0);
-        let border_radius = item["border-radius"].as_force_f32().unwrap_or(0.0);
+        let blur_radius = item["blur_radius"].as_force_f32().unwrap_or(0.0);
+        let spread_radius = item["spread_radius"].as_force_f32().unwrap_or(0.0);
+        let border_radius = item["border_radius"].as_force_f32().unwrap_or(0.0);
         let clip_mode = if let Some(mode) = item.as_str() {
             match mode {
                 s if s == "none" => BoxShadowClipMode::None,
@@ -300,13 +300,13 @@ impl YamlFrameReader {
         };
 
         for ref item in yaml.as_vec().unwrap() {
-            // an expclit type can be skipped with some shorthand
+            // an explicit type can be skipped with some shorthand
             let item_type =
                 if !item["rect"].is_badvalue() { "rect" }
                 else if !item["image"].is_badvalue() { "image" }
                 else if !item["text"].is_badvalue() { "text" }
                 else if !item["glyphs"].is_badvalue() { "glyphs" }
-                else if !item["stacking_context"].is_badvalue() { "stacking_context" }
+                else if !item["items"].is_badvalue() { "stacking_context" }
                 else { item["type"].as_str().unwrap_or("unknown") };
 
             if item_type != "stacking_context" &&
@@ -329,8 +329,7 @@ impl YamlFrameReader {
     }
 
     pub fn add_stacking_context_from_yaml(&mut self, wrench: &mut Wrench, yaml: &Yaml) {
-        let bounds = yaml["bounds"].as_rect().unwrap_or(Rect::new(Point2D::new(0.0, 0.0), wrench.window_size_f32()));
-        let overflow_bounds = yaml["overflow"].as_rect().unwrap_or(bounds);
+        let bounds = yaml["bounds"].as_rect().unwrap_or(Rect::new(Point2D::zero(), wrench.window_size_f32()));
         let z_index = yaml["z_index"].as_i64().unwrap_or(0);
         let transform = yaml["transform"].as_matrix4d().unwrap_or(Matrix4D::identity());
         let perspective = yaml["perspective"].as_matrix4d().unwrap_or(Matrix4D::identity());
@@ -341,7 +340,7 @@ impl YamlFrameReader {
 
         {
             let builder = self.builder();
-            let clip = builder.new_clip_region(&overflow_bounds, vec![], None);
+            let clip = builder.new_clip_region(&Rect::new(Point2D::zero(), bounds.size), vec![], None);
             builder.push_stacking_context(ScrollPolicy::Scrollable,
                                           bounds,
                                           clip,

@@ -4,6 +4,7 @@
 
 use euclid::{Size2D, Point2D, Rect, Matrix4D};
 use std::str::FromStr;
+use std::num::ParseFloatError;
 use app_units::Au;
 
 use yaml_rust::Yaml;
@@ -61,20 +62,28 @@ impl YamlHelper for Yaml {
     }
 
     fn as_vec_f32(&self) -> Option<Vec<f32>> {
-        if let Some(v) = self.as_str() {
-            Some(v.split_whitespace()
-                 .map(|v| f32::from_str(v).expect(&format!("expected float value, got '{:?}'", v)))
-                 .collect())
-        } else if let Some(v) = self.as_vec() {
-            Some(v.iter().map(|v| {
-                match *v {
-                    Yaml::Integer(k) => k as f32,
-                    Yaml::String(ref k) | Yaml::Real(ref k) => f32::from_str(&k).expect(&format!("expected float value, got '{:?}'", v)),
-                    _ => panic!("expected float value, got '{:?}'", v),
-                }
-            }).collect())
-        } else {
-            None
+        match *self {
+            Yaml::String(ref s) | Yaml::Real(ref s) => {
+                s.split_whitespace()
+                 .map(|v| f32::from_str(v))
+                 .collect::<Result<Vec<_>,_>>()
+                 .ok()
+            }
+            Yaml::Array(ref v) => {
+                v.iter().map(|v| {
+                    match *v {
+                        Yaml::Integer(k) => Ok(k as f32),
+                        Yaml::String(ref k) | Yaml::Real(ref k) => {
+                            f32::from_str(&k).map_err(|_| false)
+                        },
+                        _ => Err(false),
+                    }
+                }).collect::<Result<Vec<_>,_>>().ok()
+            }
+            Yaml::Integer(k) => {
+                Some(vec![k as f32])
+            }
+            _ => None
         }
     }
 
@@ -238,7 +247,7 @@ impl YamlHelper for Yaml {
     }
 
     fn as_border_radius(&self) -> Option<BorderRadius> {
-        let top_left = self["top_right"].as_size().unwrap_or(Size2D::zero());
+        let top_left = self["top_left"].as_size().unwrap_or(Size2D::zero());
         let top_right = self["top_right"].as_size().unwrap_or(Size2D::zero());
         let bottom_left = self["bottom_left"].as_size().unwrap_or(Size2D::zero());
         let bottom_right = self["bottom_right"].as_size().unwrap_or(Size2D::zero());

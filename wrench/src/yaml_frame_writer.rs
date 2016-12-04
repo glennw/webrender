@@ -468,12 +468,12 @@ impl YamlFrameWriter {
                     str_node(&mut v, "type", "box-shadow");
                     rect_node(&mut v, "bounds", &base.rect);
                     clip_node(&mut v, "clip", &base.clip);
-                    rect_node(&mut v, "box-bounds", &item.box_bounds);
+                    rect_node(&mut v, "box_bounds", &item.box_bounds);
                     point_node(&mut v, "offset", &item.offset);
                     color_node(&mut v, "color", item.color);
-                    f32_node(&mut v, "blur-radius", item.blur_radius);
-                    f32_node(&mut v, "spread-radius", item.spread_radius);
-                    f32_node(&mut v, "border-radius", item.border_radius);
+                    f32_node(&mut v, "blur_radius", item.blur_radius);
+                    f32_node(&mut v, "spread_radius", item.spread_radius);
+                    f32_node(&mut v, "border_radius", item.border_radius);
                     let clip_mode = match item.clip_mode {
                         BoxShadowClipMode::None => "none",
                         BoxShadowClipMode::Outset => "outset",

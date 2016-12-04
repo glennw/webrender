@@ -1,3 +1,7 @@
+// the json code is largely unfinished; allow these to silence a bunch of warnings
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 extern crate yaml_rust;
 
 use app_units::Au;
@@ -104,7 +108,7 @@ impl JsonFrameWriter {
 
         let mut frame_file_name = self.frame_base.clone();
         let current_shown_frame = unsafe { CURRENT_FRAME_NUMBER };
-        frame_file_name.push(format!("frame-{}.yaml", current_shown_frame));
+        frame_file_name.push(format!("frame-{}.json", current_shown_frame));
 
         let mut file = File::create(&frame_file_name).unwrap();
 

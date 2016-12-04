@@ -29,6 +29,7 @@ extern crate font_loader;
 use euclid::Size2D;
 use gleam::gl;
 use glutin::{ElementState, VirtualKeyCode};
+use std::ops;
 use std::path::PathBuf;
 use std::cmp::{min, max};
 use webrender_traits::*;
@@ -60,6 +61,12 @@ lazy_static! {
 }
 
 pub static mut CURRENT_FRAME_NUMBER: u32 = 0;
+
+fn percentile(values: &[f64], pct_int: u32) -> f64 {
+    let pct = pct_int as f32 / 100.;
+    let index = f32::floor(values.len() as f32 * pct) as usize;
+    (values[index] + values[index+1]) / 2.
+}
 
 fn make_window(size: Size2D<u32>,
                dp_ratio: Option<f32>,
@@ -159,8 +166,7 @@ fn main() {
     let mut max_max_time = time::Duration::min_value();
     let mut sum_time = time::Duration::zero();
 
-    let mut sum_block_avg_ms = time::Duration::zero();
-    let mut num_avg_ms_recorded = 0;
+    let mut block_avg_ms = vec![];
     let mut warmed_up = false;
 
     fn as_ms(f: time::Duration) -> f64 { f.num_microseconds().unwrap() as f64 / 1000. }
@@ -169,11 +175,17 @@ fn main() {
     for event in window.wait_events() {
         if let Some(limit) = limit_seconds {
             if (time::SteadyTime::now() - time_start) >= limit {
-                let avg_ms = sum_block_avg_ms / num_avg_ms_recorded;
-                println!("min, avg, max ( ms): {:4.3}, {:4.3}, {:4.3}",
-                         as_ms(min_min_time), as_ms(avg_ms), as_ms(max_max_time));
-                println!("              (fps): {:4.3}, {:4.3}, {:4.3}",
-                         as_fps(min_min_time), as_fps(avg_ms), as_fps(max_max_time));
+                let mut block_avg_ms = block_avg_ms.iter().map(|v| as_ms(*v)).collect::<Vec<f64>>();
+                block_avg_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let avg_ms = block_avg_ms.iter().fold(0., |sum, v| sum + v) / block_avg_ms.len() as f64;
+                let val_10th_pct = percentile(&block_avg_ms, 10);
+                let val_90th_pct = percentile(&block_avg_ms, 90);
+
+                println!("-    {:7} {:7} {:7}", "10th", "avg", "90th");
+                println!("ms   {:4.3} {:4.3} {:4.3}",
+                         val_10th_pct, avg_ms, val_90th_pct);
+                println!("fps  {:4.3} {:4.3} {:4.3}",
+                         1000. / val_10th_pct, 1000. / avg_ms, 1000. / val_90th_pct);
                 break;
             }
         }
@@ -215,8 +227,7 @@ fn main() {
                         println!("{:3.3} [{:3.3} .. {:3.3}]  -- {:4.3} fps  -- (global {:3.3} .. {:3.3})",
                                  as_ms(avg_time), as_ms(min_time), as_ms(max_time),
                                  as_fps(avg_time), as_ms(min_min_time), as_ms(max_max_time));
-                        sum_block_avg_ms = sum_block_avg_ms + avg_time;
-                        num_avg_ms_recorded += 1;
+                        block_avg_ms.push(avg_time);
                     } else {
                         println!("{:3.3} [{:3.3} .. {:3.3}]  -- {:4.3} fps",
                                  as_ms(avg_time), as_ms(min_time), as_ms(max_time), as_fps(avg_time));

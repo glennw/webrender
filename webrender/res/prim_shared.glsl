@@ -455,9 +455,10 @@ VertexInfo write_vertex(vec4 instance_rect,
 
     vec2 device_pos = world_pos.xy * uDevicePixelRatio;
 
-    vec2 clamped_pos = clamp(device_pos,
-                             tile.screen_origin_task_origin.xy,
-                             tile.screen_origin_task_origin.xy + tile.size_target_index.xy);
+    //vec2 clamped_pos = clamp(device_pos,
+    //                         tile.screen_origin_task_origin.xy,
+    //                         tile.screen_origin_task_origin.xy + tile.size_target_index.xy);
+    vec2 clamped_pos = device_pos;
 
     vec4 local_clamped_pos = layer.inv_transform * vec4(clamped_pos / uDevicePixelRatio, world_pos.z, 1);
     local_clamped_pos.xyz /= local_clamped_pos.w;
@@ -554,14 +555,22 @@ ResourceRect fetch_resource_rect(int index) {
 
 struct Rectangle {
     vec4 color;
+    vec2 v_offset[4];
 };
 
 Rectangle fetch_rectangle(int index) {
     Rectangle rect;
 
-    ivec2 uv = get_fetch_uv_1(index);
+    ivec2 uv = get_fetch_uv_4(index);
 
-    rect.color = texelFetchOffset(sData16, uv, 0, ivec2(0, 0));
+    rect.color = texelFetchOffset(sData64, uv, 0, ivec2(0, 0));
+    vec4 offset0 = texelFetchOffset(sData64, uv, 0, ivec2(1, 0));
+    vec4 offset1 = texelFetchOffset(sData64, uv, 0, ivec2(2, 0));
+
+    rect.v_offset[0] = offset0.xy;
+    rect.v_offset[1] = offset0.zw;
+    rect.v_offset[2] = offset1.xy;
+    rect.v_offset[3] = offset1.zw;
 
     return rect;
 }

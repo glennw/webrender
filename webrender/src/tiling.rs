@@ -74,7 +74,7 @@ trait AlphaBatchHelpers {
                          batch: &mut PrimitiveBatch,
                          layer_index: StackingContextIndex,
                          task_index: RenderTaskIndex,
-                         tile_id: TileUniqueId,
+                         //tile_id: TileUniqueId,
                          base_mask_task_index: RenderTaskIndex,
                          render_tasks: &RenderTaskCollection,
                          pass_index: RenderPassIndex);
@@ -191,7 +191,7 @@ impl AlphaBatchHelpers for PrimitiveStore {
                          batch: &mut PrimitiveBatch,
                          layer_index: StackingContextIndex,
                          task_index: RenderTaskIndex,
-                         tile_id: TileUniqueId,
+                         //tile_id: TileUniqueId,
                          base_mask_task_index: RenderTaskIndex,
                          render_tasks: &RenderTaskCollection,
                          child_pass_index: RenderPassIndex) {
@@ -199,7 +199,7 @@ impl AlphaBatchHelpers for PrimitiveStore {
         let layer_index = layer_index.0 as i32;
         let global_prim_id = prim_index.0 as i32;
         let prim_address = metadata.gpu_prim_index;
-        let clip_task_key = RenderTaskKey::CacheMask(MaskCacheKey::Primitive(prim_index), tile_id);
+        let clip_task_key = RenderTaskKey::CacheMask(MaskCacheKey::Primitive(prim_index));
         let clip_task_index = if metadata.clip_cache_info.is_some() &&
                                  render_tasks.has_dynamic_task(&clip_task_key, child_pass_index) {
             let cache_task_id = RenderTaskId::Dynamic(clip_task_key);
@@ -376,7 +376,7 @@ struct RenderPassIndex(isize);
 #[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
 pub struct RenderTaskIndex(usize);
 
-type TileUniqueId = usize;
+//type TileUniqueId = usize;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum MaskCacheKey {
@@ -390,7 +390,7 @@ pub enum RenderTaskKey {
     /// Draw this primitive to a cache target.
     CachePrimitive(PrimitiveCacheKey),
     /// Draw the tile alpha mask for a primitive.
-    CacheMask(MaskCacheKey, TileUniqueId),
+    CacheMask(MaskCacheKey),//, TileUniqueId),
     /// Apply a vertical blur pass of given radius for this primitive.
     VerticalBlur(i32, PrimitiveIndex),
     /// Apply a horizontal blur pass of given radius for this primitive.
@@ -506,7 +506,7 @@ impl Default for PrimitiveGeometry {
 struct AlphaBatchTask {
     task_id: RenderTaskId,
     items: Vec<AlphaRenderItem>,
-    tile_id: TileUniqueId,
+    //tile_id: TileUniqueId,
 }
 
 /// Encapsulates the logic of building batches for items that are blended.
@@ -550,7 +550,7 @@ impl AlphaBatcher {
                         let prim_metadata = ctx.prim_store.get_metadata(prim_index);
                         let transform_kind = layer.xf_rect.as_ref().unwrap().kind;
                         let needs_clipping = prim_metadata.clip_cache_info.is_some() ||
-                                             ctx.layer_masks_tasks.get(&(task.tile_id, sc_index)).is_some();
+                                             ctx.layer_masks_tasks.get(&sc_index).is_some();
                         let needs_blending = transform_kind == TransformedRectKind::Complex ||
                                              !prim_metadata.is_opaque ||
                                              needs_clipping;
@@ -616,7 +616,7 @@ impl AlphaBatcher {
                         debug_assert!(ok)
                     }
                     AlphaRenderItem::Primitive(sc_index, prim_index) => {
-                        let mask_task_index = match ctx.layer_masks_tasks.get(&(task.tile_id, sc_index)) {
+                        let mask_task_index = match ctx.layer_masks_tasks.get(&sc_index) {
                             Some(ref mask_task_id) => render_tasks.get_task_index(mask_task_id, child_pass_index),
                             None => OPAQUE_TASK_INDEX,
                         };
@@ -624,7 +624,7 @@ impl AlphaBatcher {
                                                          batch,
                                                          sc_index,
                                                          task_index,
-                                                         task.tile_id,
+                                                         //task.tile_id,
                                                          mask_task_index,
                                                          render_tasks,
                                                          child_pass_index);
@@ -724,7 +724,7 @@ impl ClipBatcher {
 struct CompileTileContext<'a> {
     layer_store: &'a [StackingContext],
     prim_store: &'a PrimitiveStore,
-    tile_id: TileUniqueId,
+    //tile_id: TileUniqueId,
     render_task_id_counter: AtomicUsize,
 }
 
@@ -732,7 +732,7 @@ struct RenderTargetContext<'a> {
     layer_store: &'a [StackingContext],
     prim_store: &'a PrimitiveStore,
     resource_cache: &'a ResourceCache,
-    layer_masks_tasks: HashMap<(TileUniqueId, StackingContextIndex), RenderTaskId>,
+    layer_masks_tasks: HashMap<StackingContextIndex, RenderTaskId>,
 }
 
 /// A render target represents a number of rendering operations on a surface.
@@ -790,7 +790,7 @@ impl RenderTarget {
                 self.alpha_batcher.add_task(AlphaBatchTask {
                     task_id: task.id,
                     items: info.items,
-                    tile_id: info.tile_id,
+                    //tile_id: info.tile_id,
                 });
             }
             RenderTaskKind::VerticalBlur(_, prim_index) => {
@@ -988,9 +988,9 @@ enum AlphaRenderItem {
 
 #[derive(Debug, Clone)]
 pub struct AlphaRenderTask {
-    actual_rect: DeviceIntRect,
+    //actual_rect: DeviceIntRect,
     items: Vec<AlphaRenderItem>,
-    tile_id: TileUniqueId,
+    //tile_id: TileUniqueId,
 }
 
 #[derive(Debug, Clone)]
@@ -1031,17 +1031,18 @@ pub struct RenderTask {
 }
 
 impl RenderTask {
-    fn new_alpha_batch(actual_rect: DeviceIntRect, ctx: &CompileTileContext) -> RenderTask {
+    fn new_alpha_batch(size: DeviceIntSize, //actual_rect: DeviceIntRect,
+                       ctx: &CompileTileContext) -> RenderTask {
         let task_index = ctx.render_task_id_counter.fetch_add(1, Ordering::Relaxed);
 
         RenderTask {
             id: RenderTaskId::Static(RenderTaskIndex(task_index)),
             children: Vec::new(),
-            location: RenderTaskLocation::Dynamic(None, actual_rect.size),
+            location: RenderTaskLocation::Dynamic(None, size),
             kind: RenderTaskKind::Alpha(AlphaRenderTask {
-                actual_rect: actual_rect,
+                //actual_rect: actual_rect,
                 items: Vec::new(),
-                tile_id: ctx.tile_id,
+                //tile_id: ctx.tile_id,
             }),
         }
     }
@@ -1062,7 +1063,8 @@ impl RenderTask {
                 mask_key: MaskCacheKey,
                 top_clip: (StackingContextIndex, &MaskCacheInfo),
                 layer_clips: &[(StackingContextIndex, MaskCacheInfo)],
-                tile_id: TileUniqueId)
+                //tile_id: TileUniqueId
+                )
                 -> MaskResult {
 
         let extra = (top_clip.0, top_clip.1.clone());
@@ -1088,7 +1090,7 @@ impl RenderTask {
                                .collect();
 
         MaskResult::Inside(RenderTask {
-            id: RenderTaskId::Dynamic(RenderTaskKey::CacheMask(mask_key, tile_id)),
+            id: RenderTaskId::Dynamic(RenderTaskKey::CacheMask(mask_key)),
             children: match dependent {
                 Some(task) => vec![task.clone()],
                 None => Vec::new(),
@@ -1162,15 +1164,15 @@ impl RenderTask {
         let (target_rect, target_index) = self.get_target_rect();
         match self.kind {
             RenderTaskKind::Alpha(ref task) => {
-                debug_assert_eq!(target_rect.size, task.actual_rect.size);
+                //debug_assert_eq!(target_rect.size, task.actual_rect.size);
                 RenderTaskData {
                     data: [
-                        task.actual_rect.origin.x as f32,
-                        task.actual_rect.origin.y as f32,
-                        target_rect.origin.x as f32,
-                        target_rect.origin.y as f32,
-                        task.actual_rect.size.width as f32,
-                        task.actual_rect.size.height as f32,
+                        0.0, //task.actual_rect.origin.x as f32,
+                        0.0, //task.actual_rect.origin.y as f32,
+                        0.0, //target_rect.origin.x as f32,
+                        0.0, //target_rect.origin.y as f32,
+                        0.0, //task.actual_rect.size.width as f32,
+                        0.0, //task.actual_rect.size.height as f32,
                         target_index.0 as f32,
                         0.0,
                     ],
@@ -1266,7 +1268,8 @@ impl RenderTask {
     }
 }
 
-pub const SCREEN_TILE_SIZE: i32 = 256;
+pub const SCREEN_TILE_SIZE_X: i32 = 1920;
+pub const SCREEN_TILE_SIZE_Y: i32 = 1080;
 pub const RENDERABLE_CACHE_SIZE: i32 = 2048;
 
 #[derive(Debug, Clone)]
@@ -1540,19 +1543,17 @@ impl PrimitiveBatch {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct ScreenTileLayerIndex(usize);
-
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct StackingContextIndex(usize);
 
+/*
 #[derive(Debug)]
 struct TileRange {
     x0: i32,
     y0: i32,
     x1: i32,
     y1: i32,
-}
+}*/
 
 struct StackingContext {
     pipeline_id: PipelineId,
@@ -1561,7 +1562,7 @@ struct StackingContext {
     scroll_layer_id: ScrollLayerId,
     xf_rect: Option<TransformedRect>,
     composite_kind: CompositeKind,
-    tile_range: Option<TileRange>,
+    //tile_range: Option<TileRange>,
     clip_source: ClipSource,
     clip_cache_info: Option<MaskCacheInfo>,
 }
@@ -1635,10 +1636,11 @@ impl StackingContext {
     }
 }
 
+/*
 #[derive(Debug, Clone)]
 pub struct ClearTile {
     pub rect: DeviceIntRect,
-}
+}*/
 
 #[derive(Clone, Copy)]
 pub struct FrameBuilderConfig {
@@ -1677,7 +1679,7 @@ pub struct Frame {
     pub debug_rects: Vec<DebugRect>,
     pub cache_size: DeviceSize,
     pub passes: Vec<RenderPass>,
-    pub clear_tiles: Vec<ClearTile>,
+    //pub clear_tiles: Vec<ClearTile>,
     pub profile_counters: FrameProfileCounters,
 
     pub layer_texture_data: Vec<PackedStackingContext>,
@@ -1717,11 +1719,18 @@ impl LayerMasksTasks {
     }
 }
 
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+enum RenderCommand {
+    PushLayer(StackingContextIndex),
+    PopLayer,
+    DrawPrimitive(PrimitiveIndex),
+}
+
+/*
 /// Some extra per-tile information stored for debugging purposes.
 #[derive(Debug)]
-enum CompiledScreenTileInfo {
-    SimpleAlpha(usize),
-    ComplexAlpha(usize, usize),
+struct CompiledScreenTileInfo {
+    prim_count: usize,
 }
 
 #[derive(Debug)]
@@ -1769,7 +1778,6 @@ struct ScreenTile {
     rect: DeviceIntRect,
     cmds: Vec<TileCommand>,
     prim_count: usize,
-    is_simple: bool,
 }
 
 impl ScreenTile {
@@ -1778,25 +1786,12 @@ impl ScreenTile {
             rect: rect,
             cmds: Vec::new(),
             prim_count: 0,
-            is_simple: true,
         }
     }
 
     #[inline(always)]
-    fn push_layer(&mut self,
-                  sc_index: StackingContextIndex,
-                  layers: &[StackingContext]) {
+    fn push_layer(&mut self, sc_index: StackingContextIndex) {
         self.cmds.push(TileCommand::PushLayer(sc_index));
-
-        let layer = &layers[sc_index.0];
-        match layer.composite_kind {
-            CompositeKind::None => {}
-            CompositeKind::Simple(..) | CompositeKind::Complex(..) => {
-                // Bail out on tiles with composites
-                // for now. This can be handled in the future!
-                self.is_simple = false;
-            }
-        }
     }
 
     #[inline(always)]
@@ -1921,23 +1916,6 @@ impl ScreenTile {
                     let sc_index = *sc_stack.last().unwrap();
                     let prim_metadata = ctx.prim_store.get_metadata(prim_index);
 
-                    // TODO(gw): Complex tiles don't currently get
-                    // any occlusion culling!
-                    if self.is_simple {
-                        let layer = &ctx.layer_store[sc_index.0];
-
-                        let prim_bounding_rect = ctx.prim_store.get_bounding_rect(prim_index);
-
-                        // If an opaque primitive covers a tile entirely, we can discard
-                        // all primitives underneath it.
-                        if layer.xf_rect.as_ref().unwrap().kind == TransformedRectKind::AxisAligned &&
-                           prim_metadata.clip_cache_info.is_none() &&
-                           prim_metadata.is_opaque &&
-                           prim_bounding_rect.as_ref().unwrap().contains_rect(&self.rect) {
-                            current_task.as_alpha_batch().items.clear();
-                        }
-                    }
-
                     // Add a task to render the updated image mask
                     if let Some(ref clip_info) = prim_metadata.clip_cache_info {
                         let mask_opt = RenderTask::new_mask(self.rect,
@@ -1967,16 +1945,15 @@ impl ScreenTile {
         debug_assert!(alpha_task_stack.is_empty());
         debug_assert!(clip_task_stack.is_empty());
 
-        let info = if self.is_simple {
-            CompiledScreenTileInfo::SimpleAlpha(actual_prim_count)
-        } else {
-            CompiledScreenTileInfo::ComplexAlpha(cmd_count, actual_prim_count)
+        let info = CompiledScreenTileInfo {
+            prim_count: actual_prim_count,
         };
 
         current_task.location = RenderTaskLocation::Fixed(self.rect);
         Some(CompiledScreenTile::new(current_task, info, ctx.tile_id, layer_masks_tasks))
     }
 }
+*/
 
 impl FrameBuilder {
     pub fn new(viewport_size: Size2D<f32>,
@@ -2054,7 +2031,7 @@ impl FrameBuilder {
             pipeline_id: pipeline_id,
             xf_rect: None,
             composite_kind: CompositeKind::new(composition_operations),
-            tile_range: None,
+            //tile_range: None,
             clip_source: clip_source,
             clip_cache_info: clip_info,
         };
@@ -2085,6 +2062,8 @@ impl FrameBuilder {
 
         let prim = RectanglePrimitive {
             color: *color,
+            v_offset: [LayerPoint::zero(); 4],
+            padding: [0.0; 4],
         };
 
         let prim_index = self.add_primitive(rect,
@@ -2099,6 +2078,20 @@ impl FrameBuilder {
                     scroll_layer_id: scroll_layer_id,
                     border_radius: border_radius,
                 });
+            }
+        }
+    }
+
+    // True if this can be rendered as a simple rectangle.
+    pub fn is_simple_style(&mut self, border: &BorderSide) -> bool {
+        match border.style {
+            BorderStyle::Solid |
+            BorderStyle::Inset |
+            BorderStyle::Outset => {
+                true
+            }
+            _ => {
+                false
             }
         }
     }
@@ -2143,54 +2136,134 @@ impl FrameBuilder {
         let right_color     = right.border_color(2.0/3.0, 1.0, 0.7, 0.3);
         let bottom_color    = bottom.border_color(2.0/3.0, 1.0, 0.7, 0.3);
 
-        let tl_outer = LayerPoint::new(rect.origin.x, rect.origin.y);
-        let tl_inner = tl_outer + LayerPoint::new(radius.top_left.width.max(left.width),
-                                                  radius.top_left.height.max(top.width));
+        let zero_size = Size2D::zero();
+        if radius.top_left == zero_size &&
+           radius.top_right == zero_size &&
+           radius.bottom_left == zero_size &&
+           radius.bottom_right == zero_size &&
+           self.is_simple_style(left) &&
+           self.is_simple_style(right) &&
+           self.is_simple_style(top) &&
+           self.is_simple_style(bottom) {
 
-        let tr_outer = LayerPoint::new(rect.origin.x + rect.size.width, rect.origin.y);
-        let tr_inner = tr_outer + LayerPoint::new(-radius.top_right.width.max(right.width),
-                                                  radius.top_right.height.max(top.width));
+            if left_color.a > 0.0 {
+                let prim_left = RectanglePrimitive {
+                    color: left_color,
+                    v_offset: [
+                        LayerPoint::zero(),
+                        LayerPoint::new(0.0, top.width),
+                        LayerPoint::zero(),
+                        LayerPoint::new(0.0, -bottom.width),
+                    ],
+                    padding: [0.0; 4],
+                };
 
-        let bl_outer = LayerPoint::new(rect.origin.x, rect.origin.y + rect.size.height);
-        let bl_inner = bl_outer + LayerPoint::new(radius.bottom_left.width.max(left.width),
-                                                  -radius.bottom_left.height.max(bottom.width));
+                self.add_primitive(&LayerRect::new(LayerPoint::new(rect.origin.x, rect.origin.y),
+                                                   LayerSize::new(left.width, rect.size.height)),
+                                   clip_region,
+                                   PrimitiveContainer::Rectangle(prim_left));
+            }
 
-        let br_outer = LayerPoint::new(rect.origin.x + rect.size.width,
-                                       rect.origin.y + rect.size.height);
-        let br_inner = br_outer - LayerPoint::new(radius.bottom_right.width.max(right.width),
-                                                  radius.bottom_right.height.max(bottom.width));
+            if right_color.a > 0.0 {
+                let prim_right = RectanglePrimitive {
+                    color: right_color,
+                    v_offset: [
+                        LayerPoint::new(rect.size.width - right.width, top.width),
+                        LayerPoint::zero(),
+                        LayerPoint::new(rect.size.width - right.width, -bottom.width),
+                        LayerPoint::zero(),
+                    ],
+                    padding: [0.0; 4],
+                };
 
-        //Note: while similar to `ComplexClipRegion::get_inner_rect()` in spirit,
-        // this code is a bit more complex and can not there for be merged.
-        let inner_rect = rect_from_points_f(tl_inner.x.max(bl_inner.x),
-                                            tl_inner.y.max(tr_inner.y),
-                                            tr_inner.x.min(br_inner.x),
-                                            bl_inner.y.min(br_inner.y));
+                self.add_primitive(&rect,
+                                   clip_region,
+                                   PrimitiveContainer::Rectangle(prim_right));
+            }
 
-        let prim_cpu = BorderPrimitiveCpu {
-            inner_rect: LayerRect::from_untyped(&inner_rect),
-        };
+            if top_color.a > 0.0 {
+                let prim_top = RectanglePrimitive {
+                    color: top_color,
+                    v_offset: [
+                        LayerPoint::zero(),
+                        LayerPoint::zero(),
+                        LayerPoint::new(left.width, top.width - rect.size.height),
+                        LayerPoint::new(-right.width, top.width - rect.size.height),
+                    ],
+                    padding: [0.0; 4],
+                };
 
-        let prim_gpu = BorderPrimitiveGpu {
-            colors: [ left_color, top_color, right_color, bottom_color ],
-            widths: [ left.width, top.width, right.width, bottom.width ],
-            style: [
-                pack_as_float(left.style as u32),
-                pack_as_float(top.style as u32),
-                pack_as_float(right.style as u32),
-                pack_as_float(bottom.style as u32),
-            ],
-            radii: [
-                LayerSize::from_untyped(&radius.top_left),
-                LayerSize::from_untyped(&radius.top_right),
-                LayerSize::from_untyped(&radius.bottom_right),
-                LayerSize::from_untyped(&radius.bottom_left),
-            ],
-        };
+                self.add_primitive(&rect,
+                                   clip_region,
+                                   PrimitiveContainer::Rectangle(prim_top));
+            }
 
-        self.add_primitive(&rect,
-                           clip_region,
-                           PrimitiveContainer::Border(prim_cpu, prim_gpu));
+            if bottom_color.a > 0.0 {
+                let prim_bottom = RectanglePrimitive {
+                    color: bottom_color,
+                    v_offset: [
+                        LayerPoint::new(left.width, rect.size.height - bottom.width),
+                        LayerPoint::new(-right.width, rect.size.height - bottom.width),
+                        LayerPoint::zero(),
+                        LayerPoint::zero(),
+                    ],
+                    padding: [0.0; 4],
+                };
+
+                self.add_primitive(&rect,
+                                   clip_region,
+                                   PrimitiveContainer::Rectangle(prim_bottom));
+            }
+        } else {
+            let tl_outer = LayerPoint::new(rect.origin.x, rect.origin.y);
+            let tl_inner = tl_outer + LayerPoint::new(radius.top_left.width.max(left.width),
+                                                      radius.top_left.height.max(top.width));
+
+            let tr_outer = LayerPoint::new(rect.origin.x + rect.size.width, rect.origin.y);
+            let tr_inner = tr_outer + LayerPoint::new(-radius.top_right.width.max(right.width),
+                                                      radius.top_right.height.max(top.width));
+
+            let bl_outer = LayerPoint::new(rect.origin.x, rect.origin.y + rect.size.height);
+            let bl_inner = bl_outer + LayerPoint::new(radius.bottom_left.width.max(left.width),
+                                                      -radius.bottom_left.height.max(bottom.width));
+
+            let br_outer = LayerPoint::new(rect.origin.x + rect.size.width,
+                                           rect.origin.y + rect.size.height);
+            let br_inner = br_outer - LayerPoint::new(radius.bottom_right.width.max(right.width),
+                                                      radius.bottom_right.height.max(bottom.width));
+
+            //Note: while similar to `ComplexClipRegion::get_inner_rect()` in spirit,
+            // this code is a bit more complex and can not there for be merged.
+            let inner_rect = rect_from_points_f(tl_inner.x.max(bl_inner.x),
+                                                tl_inner.y.max(tr_inner.y),
+                                                tr_inner.x.min(br_inner.x),
+                                                bl_inner.y.min(br_inner.y));
+
+            let prim_cpu = BorderPrimitiveCpu {
+                inner_rect: LayerRect::from_untyped(&inner_rect),
+            };
+
+            let prim_gpu = BorderPrimitiveGpu {
+                colors: [ left_color, top_color, right_color, bottom_color ],
+                widths: [ left.width, top.width, right.width, bottom.width ],
+                style: [
+                    pack_as_float(left.style as u32),
+                    pack_as_float(top.style as u32),
+                    pack_as_float(right.style as u32),
+                    pack_as_float(bottom.style as u32),
+                ],
+                radii: [
+                    LayerSize::from_untyped(&radius.top_left),
+                    LayerSize::from_untyped(&radius.top_right),
+                    LayerSize::from_untyped(&radius.bottom_right),
+                    LayerSize::from_untyped(&radius.bottom_left),
+                ],
+            };
+
+            self.add_primitive(&rect,
+                               clip_region,
+                               PrimitiveContainer::Border(prim_cpu, prim_gpu));
+        }
     }
 
     pub fn add_gradient(&mut self,
@@ -2444,8 +2517,8 @@ impl FrameBuilder {
                    screen_rect: &DeviceIntRect,
                    layer_map: &LayerMap,
                    auxiliary_lists_map: &AuxiliaryListsMap,
-                   x_tile_count: i32,
-                   y_tile_count: i32,
+                   //x_tile_count: i32,
+                   //y_tile_count: i32,
                    resource_cache: &mut ResourceCache,
                    profile_counters: &mut FrameProfileCounters) {
         // Build layer screen rects.
@@ -2462,7 +2535,7 @@ impl FrameBuilder {
                     let packed_layer = &mut self.packed_layers[sc_index.0];
 
                     layer.xf_rect = None;
-                    layer.tile_range = None;
+                    //layer.tile_range = None;
 
                     let scroll_layer = &layer_map[&layer.scroll_layer_id];
                     packed_layer.transform = scroll_layer.world_content_transform
@@ -2494,6 +2567,7 @@ impl FrameBuilder {
                             let layer_rect = layer_xf_rect.bounding_rect;
                             layer.xf_rect = Some(layer_xf_rect);
 
+                            /*
                             let tile_x0 = layer_rect.origin.x / SCREEN_TILE_SIZE;
                             let tile_y0 = layer_rect.origin.y / SCREEN_TILE_SIZE;
                             let tile_x1 = (layer_rect.origin.x + layer_rect.size.width + SCREEN_TILE_SIZE - 1) / SCREEN_TILE_SIZE;
@@ -2514,7 +2588,7 @@ impl FrameBuilder {
                                 y0: tile_y0,
                                 x1: tile_x1,
                                 y1: tile_y1,
-                            });
+                            });*/
                         }
                     }
 
@@ -2574,14 +2648,15 @@ impl FrameBuilder {
         }
     }
 
+/*
     fn create_screen_tiles(&self) -> (i32, i32, Vec<ScreenTile>) {
         let dp_size = DeviceIntSize::from_lengths(device_length(self.screen_rect.size.width as f32,
                                                                 self.device_pixel_ratio),
                                                   device_length(self.screen_rect.size.height as f32,
                                                                 self.device_pixel_ratio));
 
-        let x_tile_size = SCREEN_TILE_SIZE;
-        let y_tile_size = SCREEN_TILE_SIZE;
+        let x_tile_size = SCREEN_TILE_SIZE_X;
+        let y_tile_size = SCREEN_TILE_SIZE_Y;
         let x_tile_count = (dp_size.width + x_tile_size - 1) / x_tile_size;
         let y_tile_count = (dp_size.height + y_tile_size - 1) / y_tile_size;
 
@@ -2632,7 +2707,7 @@ impl FrameBuilder {
                     for ly in tile_range.y0..tile_range.y1 {
                         for lx in tile_range.x0..tile_range.x1 {
                             let tile = &mut screen_tiles[(ly * x_tile_count + lx) as usize];
-                            tile.push_layer(sc_index, &self.layer_store);
+                            tile.push_layer(sc_index);
                         }
                     }
                 }
@@ -2676,10 +2751,10 @@ impl FrameBuilder {
                         //           Does this cause any problems / demonstrate other bugs?
                         //           Restrict the tiles by clamping to the layer tile indices...
 
-                        let p_tile_x0 = p_rect.origin.x / SCREEN_TILE_SIZE;
-                        let p_tile_y0 = p_rect.origin.y / SCREEN_TILE_SIZE;
-                        let p_tile_x1 = (p_rect.origin.x + p_rect.size.width + SCREEN_TILE_SIZE - 1) / SCREEN_TILE_SIZE;
-                        let p_tile_y1 = (p_rect.origin.y + p_rect.size.height + SCREEN_TILE_SIZE - 1) / SCREEN_TILE_SIZE;
+                        let p_tile_x0 = p_rect.origin.x / SCREEN_TILE_SIZE_X;
+                        let p_tile_y0 = p_rect.origin.y / SCREEN_TILE_SIZE_Y;
+                        let p_tile_x1 = (p_rect.origin.x + p_rect.size.width + SCREEN_TILE_SIZE_X - 1) / SCREEN_TILE_SIZE_X;
+                        let p_tile_y1 = (p_rect.origin.y + p_rect.size.height + SCREEN_TILE_SIZE_Y - 1) / SCREEN_TILE_SIZE_Y;
 
                         for py in cmp::max(p_tile_y0, tile_range.y0) .. cmp::min(p_tile_y1, tile_range.y1) {
                             for px in cmp::max(p_tile_x0, tile_range.x0) .. cmp::min(p_tile_x1, tile_range.x1) {
@@ -2719,6 +2794,235 @@ impl FrameBuilder {
                 }
             }
         }
+    }
+*/
+
+    // TODO(gw): Remove RenderCommand completely - just iterate the primitve runs...
+    fn compile_render_cmds(&self,
+                           cmds: Vec<RenderCommand>,
+                           ctx: &CompileTileContext,
+                           screen_rect: DeviceIntRect) -> RenderTask {
+        let mut sc_stack = Vec::new();
+        let mut current_task = RenderTask::new_alpha_batch(screen_rect.size, ctx);
+        //let mut alpha_task_stack = Vec::new();
+        let mut clip_info_stack = Vec::new();
+        //let mut clip_task_stack = Vec::new();
+        let mut num_clips_to_skip = 0;
+        let mut layer_masks_tasks = LayerMasksTasks::new();
+
+        for cmd in cmds {
+            match cmd {
+                RenderCommand::PushLayer(sc_index) => {
+                    sc_stack.push(sc_index);
+
+                    let layer = &ctx.layer_store[sc_index.0];
+                    match layer.composite_kind {
+                        CompositeKind::None => {}
+                        CompositeKind::Simple(..) | CompositeKind::Complex(..) => {
+                            panic!("todo");
+                            /*
+                            let layer_rect = layer.xf_rect.as_ref().unwrap().bounding_rect;
+                            let needed_rect = layer_rect.intersection(&self.rect)
+                                                        .expect("bug if these don't overlap");
+                            let prev_task = mem::replace(&mut current_task,
+                                                         RenderTask::new_alpha_batch(needed_rect, ctx));
+                            alpha_task_stack.push(prev_task);
+                            */
+                        }
+                    }
+
+                    // Create a task for the layer mask, if needed,
+                    // i.e. if there are rounded corners or image masks for the layer.
+                    if let Some(ref clip_info) = layer.clip_cache_info {
+                        if CLIP_TASK_COLLAPSE {
+                            clip_info_stack.push((sc_index, clip_info.clone()));
+                        } else {
+                            panic!("todo");
+                            /*
+                            let mask_opt = RenderTask::new_mask(self.rect,
+                                                                clip_task_stack.last(),
+                                                                MaskCacheKey::Layer(sc_index),
+                                                                (sc_index, clip_info),
+                                                                &clip_info_stack);
+                            match mask_opt {
+                                MaskResult::Inside(mask_task) => {
+                                    current_task.children.push(mask_task.clone());
+                                    clip_task_stack.push(mask_task);
+                                    num_clips_to_skip = 0;
+                                }
+                                _ => num_clips_to_skip += 1,
+                            }
+                            */
+                        }
+                    }
+                    // Register the layer mask task within the context
+                    //if let Some(ref mask_task) = clip_task_stack.last() {
+                    //    panic!("todo");
+                        //layer_masks_tasks.add(sc_index, mask_task.id);
+                    //}
+                }
+                RenderCommand::PopLayer => {
+                    let sc_index = sc_stack.pop().unwrap();
+
+                    let layer = &ctx.layer_store[sc_index.0];
+                    match layer.composite_kind {
+                        CompositeKind::None => {}
+                        CompositeKind::Simple(info) => {
+                            panic!("todo");
+                            /*
+                            let mut prev_task = alpha_task_stack.pop().unwrap();
+                            prev_task.as_alpha_batch().items.push(AlphaRenderItem::Blend(current_task.id,
+                                                                                         info));
+                            prev_task.children.push(current_task);
+                            current_task = prev_task;
+                            */
+                        }
+                        CompositeKind::Complex(info) => {
+                            panic!("todo");
+                            /*
+                            let backdrop = alpha_task_stack.pop().unwrap();
+
+                            let mut composite_task = RenderTask::new_alpha_batch(self.rect, ctx);
+
+                            composite_task.as_alpha_batch().items.push(AlphaRenderItem::Composite(backdrop.id,
+                                                                                                  current_task.id,
+                                                                                                  info));
+
+                            composite_task.children.push(backdrop);
+                            composite_task.children.push(current_task);
+
+                            current_task = composite_task;
+                            */
+                        }
+                    }
+
+                    if layer.clip_cache_info.is_some() {
+                        panic!("todo");
+                        /*
+                        if CLIP_TASK_COLLAPSE {
+                            clip_info_stack.pop().unwrap();
+                        } else {
+                            if num_clips_to_skip > 0 {
+                                num_clips_to_skip -= 1;
+                            } else {
+                                clip_task_stack.pop().unwrap();
+                            }
+                        }*/
+                    }
+                }
+                RenderCommand::DrawPrimitive(prim_index) => {
+                    let sc_index = *sc_stack.last().unwrap();
+                    let prim_metadata = ctx.prim_store.get_metadata(prim_index);
+
+                    // Add a task to render the updated image mask
+                    if let Some(ref clip_info) = prim_metadata.clip_cache_info {
+                        panic!("todo");
+                        /*
+                        let mask_opt = RenderTask::new_mask(self.rect,
+                                                            clip_task_stack.last(),
+                                                            MaskCacheKey::Primitive(prim_index),
+                                                            (sc_index, clip_info),
+                                                            &clip_info_stack);
+                        match mask_opt {
+                            MaskResult::Outside => panic!("Primitive be culled by `assign_prims_to_screen_tiles` already"),
+                            MaskResult::Covering => (), //do nothing
+                            MaskResult::Inside(task) => current_task.children.push(task),
+                        }
+                        */
+                    }
+
+                    // Add any dynamic render tasks needed to render this primitive
+                    if let Some(ref render_task) = prim_metadata.render_task {
+                        current_task.children.push(render_task.clone());
+                    }
+
+                    current_task.as_alpha_batch().items.push(AlphaRenderItem::Primitive(sc_index, prim_index));
+                }
+            }
+        }
+
+        //debug_assert!(alpha_task_stack.is_empty());
+        //debug_assert!(clip_task_stack.is_empty());
+        current_task.location = RenderTaskLocation::Fixed(screen_rect);
+        current_task
+    }
+
+    fn build_render_cmd_list(&self) -> Vec<RenderCommand> {
+        let mut layer_stack: Vec<StackingContextIndex> = Vec::new();
+        let mut clip_rect_stack = Vec::new();
+        let mut cmds = Vec::new();
+
+        for cmd in &self.cmds {
+            match cmd {
+                &PrimitiveRunCmd::PushStackingContext(sc_index) => {
+                    layer_stack.push(sc_index);
+
+                    let layer = &self.layer_store[sc_index.0];
+                    if !layer.is_visible() {
+                        continue;
+                    }
+
+                    if let Some(ref clip_info) = layer.clip_cache_info {
+                        clip_rect_stack.push(clip_info.outer_rect);
+                    }
+
+                    cmds.push(RenderCommand::PushLayer(sc_index));
+                }
+                &PrimitiveRunCmd::PrimitiveRun(first_prim_index, prim_count) => {
+                    let sc_index = layer_stack.last().unwrap();
+
+                    let layer = &self.layer_store[sc_index.0];
+                    if !layer.is_visible() {
+                        continue;
+                    }
+                    let packed_layer = &self.packed_layers[sc_index.0];
+
+                    let xf_rect = &layer.xf_rect.as_ref().unwrap();
+
+                    for i in 0..prim_count {
+                        let prim_index = PrimitiveIndex(first_prim_index.0 + i);
+
+                        // check the bounding box
+                        let mut p_rect = match self.prim_store.get_bounding_rect(prim_index) {
+                            &Some(r) => r,
+                            &None => continue,
+                        };
+                        // check the clip bounding rectangle
+                        if let Some(ref clip_info) = self.prim_store.get_metadata(prim_index).clip_cache_info {
+                            p_rect = match p_rect.intersection(&clip_info.outer_rect) {
+                                Some(r) => r,
+                                None => continue,
+                            }
+                        } else
+                        // check the parent layer clip rectangle
+                        if let Some(clip_rect) = clip_rect_stack.last() {
+                            p_rect = match p_rect.intersection(clip_rect) {
+                                Some(r) => r,
+                                None => continue,
+                            }
+                        }
+
+                        cmds.push(RenderCommand::DrawPrimitive(prim_index));
+                    }
+                }
+                &PrimitiveRunCmd::PopStackingContext => {
+                    let sc_index = layer_stack.pop().unwrap();
+
+                    let layer = &self.layer_store[sc_index.0];
+                    if !layer.is_visible() {
+                        continue;
+                    }
+
+                    if layer.clip_cache_info.is_some() {
+                        clip_rect_stack.pop();
+                    }
+
+                    cmds.push(RenderCommand::PopLayer);
+                }
+            }
+        }
+
+        cmds
     }
 
     fn update_scroll_bars(&mut self,
@@ -2787,27 +3091,27 @@ impl FrameBuilder {
 
         let mut debug_rects = Vec::new();
 
-        let (x_tile_count, y_tile_count, mut screen_tiles) = self.create_screen_tiles();
+        //let (x_tile_count, y_tile_count, mut screen_tiles) = self.create_screen_tiles(device_pixel_ratio);
 
         self.update_scroll_bars(layer_map);
 
         self.cull_layers(&screen_rect,
                          layer_map,
                          auxiliary_lists_map,
-                         x_tile_count,
-                         y_tile_count,
+                         //x_tile_count,
+                         //y_tile_count,
                          resource_cache,
                          &mut profile_counters);
 
-        let mut clear_tiles = Vec::new();
-        let mut compiled_screen_tiles = Vec::new();
-        let mut max_passes_needed = 0;
+        //let mut clear_tiles = Vec::new();
+        //let mut compiled_screen_tiles = Vec::new();
+        //let mut max_passes_needed = 0;
 
-        let mut render_tasks = {
+        let (mut render_tasks, main_task) = {
             let mut ctx = CompileTileContext {
                 layer_store: &self.layer_store,
                 prim_store: &self.prim_store,
-                tile_id: 0,
+                //tile_id: 0,
 
                 // This doesn't need to be atomic right now (all the screen tiles are
                 // compiled on a single thread). However, in the future each of the
@@ -2816,27 +3120,26 @@ impl FrameBuilder {
                 render_task_id_counter: AtomicUsize::new(0),
             };
 
+/*
             if !self.layer_store.is_empty() {
                 self.assign_prims_to_screen_tiles(&mut screen_tiles, x_tile_count);
             }
+*/
+            let render_cmds = self.build_render_cmd_list();
 
             // Build list of passes, target allocs that each tile needs.
+            let main_task = self.compile_render_cmds(render_cmds, &ctx, screen_rect);
+            /*
             for (tile_id, screen_tile) in screen_tiles.into_iter().enumerate() {
-                ctx.tile_id = tile_id;
+                //ctx.tile_id = tile_id;
                 let rect = screen_tile.rect;
                 match screen_tile.compile(&ctx) {
                     Some(compiled_screen_tile) => {
                         max_passes_needed = cmp::max(max_passes_needed,
                                                      compiled_screen_tile.required_pass_count);
                         if self.debug {
-                            let (label, color) = match &compiled_screen_tile.info {
-                                &CompiledScreenTileInfo::SimpleAlpha(prim_count) => {
-                                    (format!("{}", prim_count), ColorF::new(1.0, 0.0, 1.0, 1.0))
-                                }
-                                &CompiledScreenTileInfo::ComplexAlpha(cmd_count, prim_count) => {
-                                    (format!("{}|{}", cmd_count, prim_count), ColorF::new(1.0, 0.0, 0.0, 1.0))
-                                }
-                            };
+                            let label = format!("{}", compiled_screen_tile.info.prim_count);
+                            let color = ColorF::new(1.0, 0.0, 1.0, 1.0);
                             debug_rects.push(DebugRect {
                                 label: label,
                                 color: color,
@@ -2851,10 +3154,10 @@ impl FrameBuilder {
                         });
                     }
                 }
-            }
+            }*/
 
             let static_render_task_count = ctx.render_task_id_counter.load(Ordering::SeqCst);
-            RenderTaskCollection::new(static_render_task_count)
+            (RenderTaskCollection::new(static_render_task_count), main_task)
         };
 
         resource_cache.block_until_all_resources_added();
@@ -2870,7 +3173,7 @@ impl FrameBuilder {
 
         let mut passes = Vec::new();
 
-        if !compiled_screen_tiles.is_empty() {
+        {
             let mut ctx = RenderTargetContext {
                 layer_store: &self.layer_store,
                 prim_store: &self.prim_store,
@@ -2880,11 +3183,15 @@ impl FrameBuilder {
 
             // Do the allocations now, assigning each tile's tasks to a render
             // pass and target as required.
+            let mut max_passes_needed = 0;
+            main_task.max_depth(0, &mut max_passes_needed);
+
             for index in 0..max_passes_needed {
                 passes.push(RenderPass::new(index as isize,
                                             index == max_passes_needed-1));
             }
 
+            /*
             for mut compiled_screen_tile in compiled_screen_tiles {
                 // Grab the mask task indices from the compile tile and append into the context map
                 for (i, mask_task_opt) in compiled_screen_tile.layer_masks_tasks.task_ids.drain(..).enumerate() {
@@ -2894,7 +3201,8 @@ impl FrameBuilder {
                     }
                 }
                 compiled_screen_tile.build(&mut passes);
-            }
+            }*/
+            main_task.assign_to_passes(passes.len() - 1, &mut passes);
 
             for pass in &mut passes {
                 pass.build(&ctx, &mut render_tasks);
@@ -2911,7 +3219,7 @@ impl FrameBuilder {
             debug_rects: debug_rects,
             profile_counters: profile_counters,
             passes: passes,
-            clear_tiles: clear_tiles,
+            //clear_tiles: clear_tiles,
             cache_size: DeviceSize::new(RENDERABLE_CACHE_SIZE as f32,
                                         RENDERABLE_CACHE_SIZE as f32),
             layer_texture_data: self.packed_layers.clone(),

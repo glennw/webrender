@@ -117,6 +117,8 @@ pub struct PrimitiveMetadata {
 #[derive(Debug, Clone)]
 pub struct RectanglePrimitive {
     pub color: ColorF,
+    pub v_offset: [LayerPoint; 4],
+    pub padding: [f32; 4],
 }
 
 #[derive(Debug)]
@@ -467,7 +469,7 @@ impl PrimitiveStore {
         let metadata = match container {
             PrimitiveContainer::Rectangle(rect) => {
                 let is_opaque = rect.color.a == 1.0;
-                let gpu_address = self.gpu_data16.push(rect);
+                let gpu_address = self.gpu_data64.push(rect);
 
                 let metadata = PrimitiveMetadata {
                     is_opaque: is_opaque,
@@ -1019,14 +1021,6 @@ impl From<TextRunPrimitiveGpu> for GpuBlock16 {
     }
 }
 
-impl From<RectanglePrimitive> for GpuBlock16 {
-    fn from(data: RectanglePrimitive) -> GpuBlock16 {
-        unsafe {
-            mem::transmute::<RectanglePrimitive, GpuBlock16>(data)
-        }
-    }
-}
-
 impl From<InstanceRect> for GpuBlock16 {
     fn from(data: InstanceRect) -> GpuBlock16 {
         unsafe {
@@ -1129,6 +1123,14 @@ impl From<BoxShadowPrimitiveGpu> for GpuBlock64 {
     fn from(data: BoxShadowPrimitiveGpu) -> GpuBlock64 {
         unsafe {
             mem::transmute::<BoxShadowPrimitiveGpu, GpuBlock64>(data)
+        }
+    }
+}
+
+impl From<RectanglePrimitive> for GpuBlock64 {
+    fn from(data: RectanglePrimitive) -> GpuBlock64 {
+        unsafe {
+            mem::transmute::<RectanglePrimitive, GpuBlock64>(data)
         }
     }
 }

@@ -106,7 +106,7 @@ fn main() {
             Rect::new(Point2D::new(50.0, 50.0), Size2D::new(100.0, 100.0)),
             webrender_traits::BorderRadius::uniform(20.0));
 
-        builder.new_clip_region(&bounds, vec![complex], None)
+        builder.new_clip_region(&bounds, vec![/*complex*/], None)
     };
 
     builder.push_stacking_context(webrender_traits::ScrollPolicy::Scrollable,
@@ -128,7 +128,7 @@ fn main() {
             Rect::new(Point2D::new(50.0, 50.0), Size2D::new(100.0, 100.0)),
             webrender_traits::BorderRadius::uniform(20.0));
 
-        builder.new_clip_region(&bounds, vec![complex], Some(mask))
+        builder.new_clip_region(&bounds, vec![/*complex*/], None)//Some(mask))
     };
 
     builder.push_rect(Rect::new(Point2D::new(100.0, 100.0), Size2D::new(100.0, 100.0)),

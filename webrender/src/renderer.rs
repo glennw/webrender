@@ -33,7 +33,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use texture_cache::TextureCache;
 use tiling::{self, Frame, FrameBuilderConfig, PrimitiveBatchData};
-use tiling::{RenderTarget, ClearTile};
+use tiling::RenderTarget;
 use time::precise_time_ns;
 use util::TransformedRectKind;
 use webrender_traits::{ColorF, Epoch, FlushNotifier, PipelineId, RenderNotifier, RenderDispatcher};
@@ -366,11 +366,10 @@ pub struct Renderer {
     ps_blend: LazilyCompiledShader,
     ps_composite: LazilyCompiledShader,
 
-    tile_clear_shader: LazilyCompiledShader,
+    //tile_clear_shader: LazilyCompiledShader,
 
-    max_clear_tiles: usize,
-    max_prim_blends: usize,
-    max_prim_composites: usize,
+    //max_clear_tiles: usize,
+    max_prim_instances: usize,
     max_cache_instances: usize,
     max_clip_instances: usize,
     max_blurs: usize,
@@ -595,6 +594,7 @@ impl Renderer {
                                                      &mut device,
                                                      options.precache_shaders);
 
+/*
         let max_clear_tiles = get_ubo_max_len::<ClearTile>(max_ubo_size);
         let tile_clear_shader = LazilyCompiledShader::new(ShaderKind::Clear,
                                                           "ps_clear",
@@ -602,6 +602,7 @@ impl Renderer {
                                                            &[],
                                                            &mut device,
                                                            options.precache_shaders);
+*/
 
         let mut texture_cache = TextureCache::new();
 
@@ -718,8 +719,8 @@ impl Renderer {
             current_frame: None,
             pending_texture_updates: Vec::new(),
             pending_shader_updates: Vec::new(),
-            device_pixel_ratio: options.device_pixel_ratio,
-            tile_clear_shader: tile_clear_shader,
+            device_pixel_ratio: 1.0,
+            //tile_clear_shader: tile_clear_shader,
             cs_box_shadow: cs_box_shadow,
             cs_text_run: cs_text_run,
             cs_blur: cs_blur,
@@ -740,9 +741,8 @@ impl Renderer {
             ps_cache_image: ps_cache_image,
             ps_blend: ps_blend,
             ps_composite: ps_composite,
-            max_clear_tiles: max_clear_tiles,
-            max_prim_blends: max_prim_blends,
-            max_prim_composites: max_prim_composites,
+            //max_clear_tiles: max_clear_tiles,
+            max_prim_instances: max_prim_instances,
             max_cache_instances: max_cache_instances,
             max_clip_instances: max_clip_instances,
             max_blurs: max_blurs,
@@ -1289,6 +1289,8 @@ impl Renderer {
                                         &projection);
                 }
                 &PrimitiveBatchData::Blend(ref ubo_data) => {
+                    panic!("todo");
+                    /*
                     let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_BLEND);
                     let shader = self.ps_blend.get(&mut self.device);
                     let max_prim_items = self.max_prim_blends;
@@ -1297,8 +1299,11 @@ impl Renderer {
                                         &batch.key.textures,
                                         max_prim_items,
                                         &projection);
+                                        */
                 }
                 &PrimitiveBatchData::Composite(ref ubo_data) => {
+                    panic!("todo");
+                    /*
                     let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_COMPOSITE);
                     let shader = self.ps_composite.get(&mut self.device);
                     let max_prim_items = self.max_prim_composites;
@@ -1311,6 +1316,7 @@ impl Renderer {
                                         &batch.key.textures,
                                         max_prim_items,
                                         &projection);
+                                        */
 
                 }
                 &PrimitiveBatchData::Rectangles(ref ubo_data) => {
@@ -1555,7 +1561,8 @@ impl Renderer {
             }
         }
 
-        let _ = self.gpu_profile.add_marker(GPU_TAG_CLEAR_TILES);
+/*
+        let _gm = self.gpu_profile.add_marker(GPU_TAG_CLEAR_TILES);
 
         // Clear tiles with no items
         if !frame.clear_tiles.is_empty() {
@@ -1569,6 +1576,7 @@ impl Renderer {
                                 max_prim_items,
                                 &projection);
         }
+*/
 
         self.release_external_textures();
     }

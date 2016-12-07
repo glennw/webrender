@@ -6,6 +6,7 @@
 VertexInfo write_vertex2(vec4 instance_rect,
                          vec2 offset,
                          vec4 local_clip_rect,
+                         float z,
                          Layer layer,
                          Tile tile) {
     vec2 p0 = floor(0.5 + instance_rect.xy * uDevicePixelRatio) / uDevicePixelRatio;
@@ -34,7 +35,7 @@ VertexInfo write_vertex2(vec4 instance_rect,
 
     vec2 final_pos = clamped_pos + tile.screen_origin_task_origin.zw - tile.screen_origin_task_origin.xy;
 
-    gl_Position = uTransform * vec4(final_pos, 0, 1);
+    gl_Position = uTransform * vec4(final_pos, z, 1);
 
     VertexInfo vi = VertexInfo(Rect(p0, p1), local_clamped_pos.xy, clamped_pos.xy);
     return vi;
@@ -57,6 +58,7 @@ void main(void) {
     write_vertex2(prim.local_rect,
                                   rect.v_offset[gl_VertexID],
                                  prim.local_clip_rect,
+                                 rect.z,
                                  prim.layer,
                                  prim.tile);
 #endif

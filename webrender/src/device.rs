@@ -530,17 +530,20 @@ impl<T> GpuFrameProfile<T> {
         self.samples.clear();
     }
 
+/*
     #[cfg(not(target_os = "android"))]
     fn end_frame(&mut self) {
         if self.pending_query != 0 {
             gl::end_query(gl::TIME_ELAPSED);
         }
     }
+*/
 
-    #[cfg(target_os = "android")]
+    // #[cfg(target_os = "android")]
     fn end_frame(&mut self) {
     }
 
+/*
     #[cfg(not(target_os = "android"))]
     fn add_marker(&mut self, tag: T) -> GpuMarker
     where T: NamedTag {
@@ -563,9 +566,9 @@ impl<T> GpuFrameProfile<T> {
 
         self.next_query += 1;
         marker
-    }
+    }*/
 
-    #[cfg(target_os = "android")]
+    // #[cfg(target_os = "android")]
     fn add_marker(&mut self, tag: T) {
         self.samples.push(GpuSample {
             tag: tag,
@@ -577,6 +580,7 @@ impl<T> GpuFrameProfile<T> {
         self.next_query <= MAX_EVENTS_PER_FRAME
     }
 
+/*
     #[cfg(not(target_os = "android"))]
     fn build_samples(&mut self) -> Vec<GpuSample<T>> {
         for (index, sample) in self.samples.iter_mut().enumerate() {
@@ -585,8 +589,9 @@ impl<T> GpuFrameProfile<T> {
 
         mem::replace(&mut self.samples, Vec::new())
     }
+*/
 
-    #[cfg(target_os = "android")]
+    // #[cfg(target_os = "android")]
     fn build_samples(&mut self) -> Vec<GpuSample<T>> {
         mem::replace(&mut self.samples, Vec::new())
     }
@@ -641,13 +646,15 @@ impl<T> GpuProfiler<T> {
         self.next_frame = (self.next_frame + 1) % MAX_PROFILE_FRAMES;
     }
 
+/*
     #[cfg(not(target_os = "android"))]
     pub fn add_marker(&mut self, tag: T) -> GpuMarker
     where T: NamedTag {
         self.frames[self.next_frame].add_marker(tag)
     }
+*/
 
-    #[cfg(target_os = "android")]
+    // #[cfg(target_os = "android")]
     pub fn add_marker(&mut self, tag: T) {
         self.frames[self.next_frame].add_marker(tag)
     }
@@ -1751,8 +1758,16 @@ impl Device {
         gl::clear(gl::COLOR_BUFFER_BIT);
     }
 
+    pub fn enable_depth(&self) {
+        gl::enable(gl::DEPTH_TEST);
+    }
+
     pub fn disable_depth(&self) {
         gl::disable(gl::DEPTH_TEST);
+    }
+
+    pub fn enable_depth_write(&self) {
+        gl::depth_mask(true);
     }
 
     pub fn disable_depth_write(&self) {

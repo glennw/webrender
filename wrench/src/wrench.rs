@@ -318,7 +318,7 @@ impl Wrench {
             self.window_size = dim;
         }
 
-        //gl::clear(gl::COLOR_BUFFER_BIT);
+        gl::clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
     }
 
     pub fn begin_frame(&mut self) {

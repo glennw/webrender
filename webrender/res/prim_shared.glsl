@@ -556,6 +556,7 @@ ResourceRect fetch_resource_rect(int index) {
 struct Rectangle {
     vec4 color;
     vec2 v_offset[4];
+    float z;
 };
 
 Rectangle fetch_rectangle(int index) {
@@ -566,11 +567,14 @@ Rectangle fetch_rectangle(int index) {
     rect.color = texelFetchOffset(sData64, uv, 0, ivec2(0, 0));
     vec4 offset0 = texelFetchOffset(sData64, uv, 0, ivec2(1, 0));
     vec4 offset1 = texelFetchOffset(sData64, uv, 0, ivec2(2, 0));
+    float z = texelFetchOffset(sData64, uv, 0, ivec2(3, 0)).x;
 
     rect.v_offset[0] = offset0.xy;
     rect.v_offset[1] = offset0.zw;
     rect.v_offset[2] = offset1.xy;
     rect.v_offset[3] = offset1.zw;
+
+    rect.z = z;
 
     return rect;
 }

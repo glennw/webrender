@@ -505,20 +505,23 @@ impl Default for PrimitiveGeometry {
 
 struct AlphaBatchTask {
     task_id: RenderTaskId,
-    items: Vec<AlphaRenderItem>,
+    alpha_items: Vec<AlphaRenderItem>,
+    opaque_items: Vec<AlphaRenderItem>,
     //tile_id: TileUniqueId,
 }
 
 /// Encapsulates the logic of building batches for items that are blended.
 pub struct AlphaBatcher {
-    pub batches: Vec<PrimitiveBatch>,
+    pub opaque_batches: Vec<PrimitiveBatch>,
+    pub alpha_batches: Vec<PrimitiveBatch>,
     tasks: Vec<AlphaBatchTask>,
 }
 
 impl AlphaBatcher {
     fn new() -> AlphaBatcher {
         AlphaBatcher {
-            batches: Vec::new(),
+            opaque_batches: Vec::new(),
+            alpha_batches: Vec::new(),
             tasks: Vec::new(),
         }
     }
@@ -531,12 +534,111 @@ impl AlphaBatcher {
              ctx: &RenderTargetContext,
              render_tasks: &RenderTaskCollection,
              child_pass_index: RenderPassIndex) {
-        let mut batches: Vec<PrimitiveBatch> = vec![];
+        let mut opaque_batches: Vec<PrimitiveBatch> = vec![];
+        let mut alpha_batches: Vec<PrimitiveBatch> = vec![];
+
         for task in &mut self.tasks {
             let task_index = render_tasks.get_static_task_index(&task.task_id);
 
-            let mut existing_batch_index = 0;
-            for item in task.items.drain(..) {
+            let mut existing_alpha_batch_index = 0;
+            let mut existing_opaque_batch_index = 0;
+            for item in task.opaque_items.iter().rev() {
+                let batch_key = match item {
+                    &AlphaRenderItem::Composite(..) => {
+                        AlphaBatchKey::composite()
+                    }
+                    &AlphaRenderItem::Blend(..) => {
+                        AlphaBatchKey::blend()
+                    }
+                    &AlphaRenderItem::Primitive(sc_index, prim_index) => {
+                        // See if this task fits into the tile UBO
+                        let layer = &ctx.layer_store[sc_index.0];
+                        let prim_metadata = ctx.prim_store.get_metadata(prim_index);
+                        let transform_kind = layer.xf_rect.as_ref().unwrap().kind;
+                        let needs_clipping = prim_metadata.clip_cache_info.is_some() ||
+                                             ctx.layer_masks_tasks.get(&sc_index).is_some();
+                        let needs_blending = transform_kind == TransformedRectKind::Complex ||
+                                             !prim_metadata.is_opaque ||
+                                             needs_clipping;
+                        let blend_mode = ctx.prim_store.get_blend_mode(needs_blending, prim_metadata);
+                        let needs_clipping_flag = if needs_clipping {
+                            NEEDS_CLIPPING
+                        } else {
+                            AlphaBatchKeyFlags::empty()
+                        };
+                        let flags = match transform_kind {
+                            TransformedRectKind::AxisAligned => AXIS_ALIGNED | needs_clipping_flag,
+                            _ => needs_clipping_flag,
+                        };
+                        let batch_kind = ctx.prim_store.get_batch_kind(prim_metadata);
+
+                        let textures = BatchTextures {
+                            colors: ctx.prim_store.get_color_textures(prim_metadata),
+                        };
+
+                        AlphaBatchKey::primitive(batch_kind,
+                                                 flags,
+                                                 blend_mode,
+                                                 textures)
+                    }
+                };
+
+                while existing_opaque_batch_index < opaque_batches.len() &&
+                        !opaque_batches[existing_opaque_batch_index].key.is_compatible_with(&batch_key) {
+                    existing_opaque_batch_index += 1
+                }
+
+                if existing_opaque_batch_index == opaque_batches.len() {
+                    let new_batch = match item {
+                        &AlphaRenderItem::Composite(..) => {
+                            PrimitiveBatch::composite()
+                        }
+                        &AlphaRenderItem::Blend(..) => {
+                            PrimitiveBatch::blend()
+                        }
+                        &AlphaRenderItem::Primitive(_, prim_index) => {
+                            // See if this task fits into the tile UBO
+                            let prim_metadata = ctx.prim_store.get_metadata(prim_index);
+                            let batch_kind = ctx.prim_store.get_batch_kind(prim_metadata);
+                            PrimitiveBatch::new(batch_kind, batch_key)
+                        }
+                    };
+                    opaque_batches.push(new_batch)
+                }
+
+                let batch = &mut opaque_batches[existing_opaque_batch_index];
+                match item {
+                    &AlphaRenderItem::Composite(src0_id, src1_id, info) => {
+                        let ok = batch.pack_composite(render_tasks.get_static_task_index(&src0_id),
+                                                      render_tasks.get_static_task_index(&src1_id),
+                                                      render_tasks.get_static_task_index(&task.task_id),
+                                                      info);
+                        debug_assert!(ok)
+                    }
+                    &AlphaRenderItem::Blend(src_id, info) => {
+                        let ok = batch.pack_blend(render_tasks.get_static_task_index(&src_id),
+                                                  render_tasks.get_static_task_index(&task.task_id),
+                                                  info);
+                        debug_assert!(ok)
+                    }
+                    &AlphaRenderItem::Primitive(sc_index, prim_index) => {
+                        let mask_task_index = match ctx.layer_masks_tasks.get(&sc_index) {
+                            Some(ref mask_task_id) => render_tasks.get_task_index(mask_task_id, child_pass_index),
+                            None => OPAQUE_TASK_INDEX,
+                        };
+                        ctx.prim_store.add_prim_to_batch(prim_index,
+                                                         batch,
+                                                         sc_index,
+                                                         task_index,
+                                                         //task.tile_id,
+                                                         mask_task_index,
+                                                         render_tasks,
+                                                         child_pass_index);
+                    }
+                }
+            }
+
+            for item in task.alpha_items.drain(..) {
                 let batch_key = match item {
                     AlphaRenderItem::Composite(..) => {
                         AlphaBatchKey::composite()
@@ -577,12 +679,12 @@ impl AlphaBatcher {
                     }
                 };
 
-                while existing_batch_index < batches.len() &&
-                        !batches[existing_batch_index].key.is_compatible_with(&batch_key) {
-                    existing_batch_index += 1
+                while existing_alpha_batch_index < alpha_batches.len() &&
+                        !alpha_batches[existing_alpha_batch_index].key.is_compatible_with(&batch_key) {
+                    existing_alpha_batch_index += 1
                 }
 
-                if existing_batch_index == batches.len() {
+                if existing_alpha_batch_index == alpha_batches.len() {
                     let new_batch = match item {
                         AlphaRenderItem::Composite(..) => {
                             PrimitiveBatch::composite()
@@ -597,10 +699,10 @@ impl AlphaBatcher {
                             PrimitiveBatch::new(batch_kind, batch_key)
                         }
                     };
-                    batches.push(new_batch)
+                    alpha_batches.push(new_batch)
                 }
 
-                let batch = &mut batches[existing_batch_index];
+                let batch = &mut alpha_batches[existing_alpha_batch_index];
                 match item {
                     AlphaRenderItem::Composite(src0_id, src1_id, info) => {
                         let ok = batch.pack_composite(render_tasks.get_static_task_index(&src0_id),
@@ -633,7 +735,8 @@ impl AlphaBatcher {
             }
         }
 
-        self.batches.extend(batches.into_iter())
+        self.alpha_batches.extend(alpha_batches.into_iter());
+        self.opaque_batches.extend(opaque_batches.into_iter());
     }
 }
 
@@ -789,7 +892,8 @@ impl RenderTarget {
             RenderTaskKind::Alpha(info) => {
                 self.alpha_batcher.add_task(AlphaBatchTask {
                     task_id: task.id,
-                    items: info.items,
+                    opaque_items: info.opaque_items,
+                    alpha_items: info.alpha_items,
                     //tile_id: info.tile_id,
                 });
             }
@@ -989,7 +1093,8 @@ enum AlphaRenderItem {
 #[derive(Debug, Clone)]
 pub struct AlphaRenderTask {
     //actual_rect: DeviceIntRect,
-    items: Vec<AlphaRenderItem>,
+    alpha_items: Vec<AlphaRenderItem>,
+    opaque_items: Vec<AlphaRenderItem>,
     //tile_id: TileUniqueId,
 }
 
@@ -1041,7 +1146,8 @@ impl RenderTask {
             location: RenderTaskLocation::Dynamic(None, size),
             kind: RenderTaskKind::Alpha(AlphaRenderTask {
                 //actual_rect: actual_rect,
-                items: Vec::new(),
+                opaque_items: Vec::new(),
+                alpha_items: Vec::new(),
                 //tile_id: ctx.tile_id,
             }),
         }
@@ -1670,6 +1776,7 @@ pub struct FrameBuilder {
     packed_layers: Vec<PackedStackingContext>,
 
     scrollbar_prims: Vec<ScrollbarPrimitive>,
+    next_z: f32,
 }
 
 /// A rendering-oriented representation of frame::Frame built by the render backend
@@ -1971,6 +2078,7 @@ impl FrameBuilder {
             packed_layers: Vec::new(),
             scrollbar_prims: Vec::new(),
             config: config,
+            next_z: -50000.0,
         }
     }
 
@@ -2060,10 +2168,14 @@ impl FrameBuilder {
             return;
         }
 
+        let z = self.next_z;
+        self.next_z += 1.0;
+
         let prim = RectanglePrimitive {
             color: *color,
             v_offset: [LayerPoint::zero(); 4],
-            padding: [0.0; 4],
+            padding: [0.0; 3],
+            z: z,
         };
 
         let prim_index = self.add_primitive(rect,
@@ -2146,6 +2258,9 @@ impl FrameBuilder {
            self.is_simple_style(top) &&
            self.is_simple_style(bottom) {
 
+            let z = self.next_z;
+            self.next_z += 1.0;
+
             if left_color.a > 0.0 {
                 let prim_left = RectanglePrimitive {
                     color: left_color,
@@ -2155,7 +2270,8 @@ impl FrameBuilder {
                         LayerPoint::zero(),
                         LayerPoint::new(0.0, -bottom.width),
                     ],
-                    padding: [0.0; 4],
+                    z: z,
+                    padding: [0.0; 3],
                 };
 
                 self.add_primitive(&LayerRect::new(LayerPoint::new(rect.origin.x, rect.origin.y),
@@ -2173,7 +2289,8 @@ impl FrameBuilder {
                         LayerPoint::new(rect.size.width - right.width, -bottom.width),
                         LayerPoint::zero(),
                     ],
-                    padding: [0.0; 4],
+                    z: z,
+                    padding: [0.0; 3],
                 };
 
                 self.add_primitive(&rect,
@@ -2190,7 +2307,8 @@ impl FrameBuilder {
                         LayerPoint::new(left.width, top.width - rect.size.height),
                         LayerPoint::new(-right.width, top.width - rect.size.height),
                     ],
-                    padding: [0.0; 4],
+                    z: z,
+                    padding: [0.0; 3],
                 };
 
                 self.add_primitive(&rect,
@@ -2207,7 +2325,8 @@ impl FrameBuilder {
                         LayerPoint::zero(),
                         LayerPoint::zero(),
                     ],
-                    padding: [0.0; 4],
+                    z: z,
+                    padding: [0.0; 3],
                 };
 
                 self.add_primitive(&rect,
@@ -2936,7 +3055,11 @@ impl FrameBuilder {
                         current_task.children.push(render_task.clone());
                     }
 
-                    current_task.as_alpha_batch().items.push(AlphaRenderItem::Primitive(sc_index, prim_index));
+                    if prim_metadata.is_opaque {
+                        current_task.as_alpha_batch().opaque_items.push(AlphaRenderItem::Primitive(sc_index, prim_index));
+                    } else {
+                        current_task.as_alpha_batch().alpha_items.push(AlphaRenderItem::Primitive(sc_index, prim_index));
+                    }
                 }
             }
         }

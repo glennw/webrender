@@ -33,7 +33,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use texture_cache::TextureCache;
 use tiling::{self, Frame, FrameBuilderConfig, PrimitiveBatchData};
-use tiling::RenderTarget;
+use tiling::{PrimitiveBatch, RenderTarget};
 use time::precise_time_ns;
 use util::TransformedRectKind;
 use webrender_traits::{ColorF, Epoch, FlushNotifier, PipelineId, RenderNotifier, RenderDispatcher};
@@ -1071,6 +1071,150 @@ impl Renderer {
         }
     }
 
+    fn submit_batch(&mut self, batch: &PrimitiveBatch, projection: &Matrix4D<f32>) {
+        let transform_kind = batch.key.flags.transform_kind();
+        let needs_clipping = batch.key.flags.needs_clipping();
+        debug_assert!(!needs_clipping || batch.key.blend_mode == BlendMode::Alpha);
+
+        match &batch.data {
+            &PrimitiveBatchData::CacheImage(ref ubo_data) => {
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_CACHE_IMAGE);
+                let (shader, max_prim_items) = self.ps_cache_image.get(&mut self.device,
+                                                                       transform_kind);
+                self.draw_ubo_batch(ubo_data,
+                                    shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+            }
+            &PrimitiveBatchData::Blend(ref ubo_data) => {
+                panic!("todo");
+                /*
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_BLEND);
+                let shader = self.ps_blend.get(&mut self.device);
+                let max_prim_items = self.max_prim_blends;
+                self.draw_ubo_batch(ubo_data, shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+                                    */
+            }
+            &PrimitiveBatchData::Composite(ref ubo_data) => {
+                panic!("todo");
+                /*
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_COMPOSITE);
+                let shader = self.ps_composite.get(&mut self.device);
+                let max_prim_items = self.max_prim_composites;
+
+                // The composite shader only samples from sCache.
+                debug_assert!(cache_texture.is_some());
+
+                self.draw_ubo_batch(ubo_data, shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+                                    */
+
+            }
+            &PrimitiveBatchData::Rectangles(ref ubo_data) => {
+                //println!("draw_rects {:?}", batch.key.blend_mode);
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_RECT);
+                let (shader, max_prim_items) = if needs_clipping {
+                    self.ps_rectangle_clip.get(&mut self.device, transform_kind)
+                } else {
+                    self.ps_rectangle.get(&mut self.device, transform_kind)
+                };
+                self.draw_ubo_batch(ubo_data,
+                                    shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+            }
+            &PrimitiveBatchData::Image(ref ubo_data) => {
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_IMAGE);
+                let (shader, max_prim_items) = self.ps_image.get(&mut self.device, transform_kind);
+                self.draw_ubo_batch(ubo_data,
+                                    shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+            }
+            &PrimitiveBatchData::YuvImage(ref ubo_data) => {
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_YUV_IMAGE);
+                let (shader, max_prim_items) = self.ps_yuv_image.get(
+                    &mut self.device, transform_kind
+                );
+                self.draw_ubo_batch(ubo_data,
+                                    shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+            }
+            &PrimitiveBatchData::Borders(ref ubo_data) => {
+                //println!("draw borders {:?}", batch.key.blend_mode);
+
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_BORDER);
+                let (shader, max_prim_items) = self.ps_border.get(&mut self.device, transform_kind);
+                self.draw_ubo_batch(ubo_data,
+                                    shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+            }
+            &PrimitiveBatchData::BoxShadow(ref ubo_data) => {
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_BOX_SHADOW);
+                let (shader, max_prim_items) = self.ps_box_shadow.get(&mut self.device, transform_kind);
+                self.draw_ubo_batch(ubo_data,
+                                    shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+            }
+            &PrimitiveBatchData::TextRun(ref ubo_data) => {
+                //println!("draw_text {:?}", batch.key.blend_mode);
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_TEXT_RUN);
+                let (shader, max_prim_items) = match batch.key.blend_mode {
+                    BlendMode::Subpixel(..) => self.ps_text_run_subpixel.get(&mut self.device, transform_kind),
+                    BlendMode::Alpha | BlendMode::None => self.ps_text_run.get(&mut self.device, transform_kind),
+                };
+                self.draw_ubo_batch(ubo_data,
+                                    shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+            }
+            &PrimitiveBatchData::AlignedGradient(ref ubo_data) => {
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_GRADIENT);
+                let (shader, max_prim_items) = self.ps_gradient.get(&mut self.device, transform_kind);
+                self.draw_ubo_batch(ubo_data,
+                                    shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+            }
+            &PrimitiveBatchData::AngleGradient(ref ubo_data) => {
+                let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_ANGLE_GRADIENT);
+                let (shader, max_prim_items) = self.ps_angle_gradient.get(&mut self.device, transform_kind);
+                self.draw_ubo_batch(ubo_data,
+                                    shader,
+                                    1,
+                                    &batch.key.textures,
+                                    max_prim_items,
+                                    &projection);
+            }
+        }
+    }
+
     fn draw_target(&mut self,
                    render_target: Option<(TextureId, i32)>,
                    target: &RenderTarget,
@@ -1252,165 +1396,35 @@ impl Renderer {
 
         let _ = GpuMarker::new("alpha batches");
         self.device.set_blend(false);
-        let mut prev_blend_mode = BlendMode::None;
 
-        for batch in &target.alpha_batcher.batches {
-            let transform_kind = batch.key.flags.transform_kind();
-            let needs_clipping = batch.key.flags.needs_clipping();
-            debug_assert!(!needs_clipping || batch.key.blend_mode == BlendMode::Alpha);
+        self.device.enable_depth();
+        self.device.enable_depth_write();
+        self.device.set_blend(false);
+        //println!("start frame ");
 
-            if batch.key.blend_mode != prev_blend_mode {
-                match batch.key.blend_mode {
-                    BlendMode::None => {
-                        self.device.set_blend(false);
-                    }
-                    BlendMode::Alpha => {
-                        self.device.set_blend(true);
-                        self.device.set_blend_mode_alpha();
-                    }
-                    BlendMode::Subpixel(color) => {
-                        self.device.set_blend(true);
-                        self.device.set_blend_mode_subpixel(color);
-                    }
-                }
-                prev_blend_mode = batch.key.blend_mode;
-            }
-
-            match &batch.data {
-                &PrimitiveBatchData::CacheImage(ref ubo_data) => {
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_CACHE_IMAGE);
-                    let (shader, max_prim_items) = self.ps_cache_image.get(&mut self.device,
-                                                                           transform_kind);
-                    self.draw_ubo_batch(ubo_data,
-                                        shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                }
-                &PrimitiveBatchData::Blend(ref ubo_data) => {
-                    panic!("todo");
-                    /*
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_BLEND);
-                    let shader = self.ps_blend.get(&mut self.device);
-                    let max_prim_items = self.max_prim_blends;
-                    self.draw_ubo_batch(ubo_data, shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                                        */
-                }
-                &PrimitiveBatchData::Composite(ref ubo_data) => {
-                    panic!("todo");
-                    /*
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_COMPOSITE);
-                    let shader = self.ps_composite.get(&mut self.device);
-                    let max_prim_items = self.max_prim_composites;
-
-                    // The composite shader only samples from sCache.
-                    debug_assert!(cache_texture.is_some());
-
-                    self.draw_ubo_batch(ubo_data, shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                                        */
-
-                }
-                &PrimitiveBatchData::Rectangles(ref ubo_data) => {
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_RECT);
-                    let (shader, max_prim_items) = if needs_clipping {
-                        self.ps_rectangle_clip.get(&mut self.device, transform_kind)
-                    } else {
-                        self.ps_rectangle.get(&mut self.device, transform_kind)
-                    };
-                    self.draw_ubo_batch(ubo_data,
-                                        shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                }
-                &PrimitiveBatchData::Image(ref ubo_data) => {
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_IMAGE);
-                    let (shader, max_prim_items) = self.ps_image.get(&mut self.device, transform_kind);
-                    self.draw_ubo_batch(ubo_data,
-                                        shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                }
-                &PrimitiveBatchData::YuvImage(ref ubo_data) => {
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_YUV_IMAGE);
-                    let (shader, max_prim_items) = self.ps_yuv_image.get(
-                        &mut self.device, transform_kind
-                    );
-                    self.draw_ubo_batch(ubo_data,
-                                        shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                }
-                &PrimitiveBatchData::Borders(ref ubo_data) => {
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_BORDER);
-                    let (shader, max_prim_items) = self.ps_border.get(&mut self.device, transform_kind);
-                    self.draw_ubo_batch(ubo_data,
-                                        shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                }
-                &PrimitiveBatchData::BoxShadow(ref ubo_data) => {
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_BOX_SHADOW);
-                    let (shader, max_prim_items) = self.ps_box_shadow.get(&mut self.device, transform_kind);
-                    self.draw_ubo_batch(ubo_data,
-                                        shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                }
-                &PrimitiveBatchData::TextRun(ref ubo_data) => {
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_TEXT_RUN);
-                    let (shader, max_prim_items) = match batch.key.blend_mode {
-                        BlendMode::Subpixel(..) => self.ps_text_run_subpixel.get(&mut self.device, transform_kind),
-                        BlendMode::Alpha | BlendMode::None => self.ps_text_run.get(&mut self.device, transform_kind),
-                    };
-                    self.draw_ubo_batch(ubo_data,
-                                        shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                }
-                &PrimitiveBatchData::AlignedGradient(ref ubo_data) => {
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_GRADIENT);
-                    let (shader, max_prim_items) = self.ps_gradient.get(&mut self.device, transform_kind);
-                    self.draw_ubo_batch(ubo_data,
-                                        shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                }
-                &PrimitiveBatchData::AngleGradient(ref ubo_data) => {
-                    let _ = self.gpu_profile.add_marker(GPU_TAG_PRIM_ANGLE_GRADIENT);
-                    let (shader, max_prim_items) = self.ps_angle_gradient.get(&mut self.device, transform_kind);
-                    self.draw_ubo_batch(ubo_data,
-                                        shader,
-                                        1,
-                                        &batch.key.textures,
-                                        max_prim_items,
-                                        &projection);
-                }
-            }
+        for batch in target.alpha_batcher.opaque_batches.iter().rev() {
+            debug_assert!(batch.key.blend_mode == BlendMode::None);
+            self.submit_batch(batch, &projection);
         }
 
+        self.device.disable_depth_write();
+        self.device.set_blend(true);
+        for batch in &target.alpha_batcher.alpha_batches {
+            match batch.key.blend_mode {
+                BlendMode::None => unreachable!(),
+                BlendMode::Alpha => {
+                    self.device.set_blend_mode_alpha();
+                }
+                BlendMode::Subpixel(color) => {
+                    self.device.set_blend_mode_subpixel(color);
+                }
+            }
+
+            self.submit_batch(batch, &projection);
+        }
+
+        self.device.disable_depth();
+        self.device.enable_depth_write();
         self.device.set_blend(false);
     }
 

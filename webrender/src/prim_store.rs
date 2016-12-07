@@ -118,7 +118,8 @@ pub struct PrimitiveMetadata {
 pub struct RectanglePrimitive {
     pub color: ColorF,
     pub v_offset: [LayerPoint; 4],
-    pub padding: [f32; 4],
+    pub z: f32,
+    pub padding: [f32; 3],
 }
 
 #[derive(Debug)]

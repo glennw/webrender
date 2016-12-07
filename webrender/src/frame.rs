@@ -655,6 +655,7 @@ impl Frame {
             ScrollPolicy::Scrollable => current_scroll_layer_id,
         };
 
+/*
         if level == 0 {
             // Add a large white rectangle as the root display item if there is no root stacking
             // context background color. This is removed by the occlusion culling for most tiles,
@@ -691,7 +692,7 @@ impl Frame {
                                                 PrimitiveFlags::None);
 
             context.builder.pop_layer();
-        }
+        }*/
 
          // TODO(gw): Int with overflow etc
         context.builder.push_layer(LayerRect::from_untyped(&clip_region.main),

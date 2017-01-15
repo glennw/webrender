@@ -4,5 +4,5 @@
 
 varying vec3 vUv0;
 varying vec3 vUv1;
-flat varying vec4 vUv1Rect;
+//flat varying vec4 vUv1Rect;
 flat varying int vOp;

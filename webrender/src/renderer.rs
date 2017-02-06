@@ -1321,8 +1321,8 @@ impl Renderer {
                     }),
                     Matrix4D::ortho(0.0,
                                    target_size.width as f32,
-                                   target_size.height as f32,
-                                   0.0,
+                                   target_size.height as f32 - 200.0,
+                                   -200.0,
                                    ORTHO_NEAR_PLANE,
                                    ORTHO_FAR_PLANE)
                 ),

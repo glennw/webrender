@@ -74,7 +74,7 @@ impl ScrollTree {
         debug_assert!(self.layers.is_empty());
 
         let identity = LayerToScrollTransform::identity();
-        let viewport = LayerRect::new(LayerPoint::zero(), *viewport_size);
+        let viewport = LayerRect::new(LayerPoint::new(0.0, -100.0), *viewport_size);
 
         let root_reference_frame_id = ScrollLayerId::root_reference_frame(pipeline_id);
         self.root_reference_frame_id = root_reference_frame_id;

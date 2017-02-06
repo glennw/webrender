@@ -2804,7 +2804,7 @@ impl FrameBuilder {
         resource_cache.begin_frame(frame_id);
 
         let screen_rect = DeviceIntRect::new(
-            DeviceIntPoint::zero(),
+            DeviceIntPoint::new(0, -200),
             DeviceIntSize::from_lengths(device_length(self.screen_rect.size.width as f32,
                                                       device_pixel_ratio),
                                         device_length(self.screen_rect.size.height as f32,

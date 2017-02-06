@@ -280,7 +280,7 @@ impl Frame {
             let topmost_scroll_layer_id = self.scroll_tree.topmost_scroll_layer_id();
             debug_assert!(reference_frame_id != topmost_scroll_layer_id);
 
-            let viewport_rect = LayerRect::new(LayerPoint::zero(), root_pipeline.viewport_size);
+            let viewport_rect = LayerRect::new(LayerPoint::new(0.0, -100.0), root_pipeline.viewport_size);
             let clip = ClipRegion::simple(&viewport_rect);
             context.builder.push_scroll_layer(reference_frame_id,
                                               &clip,

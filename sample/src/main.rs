@@ -17,7 +17,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use webrender_traits::{ColorF, Epoch, GlyphInstance};
-use webrender_traits::{ImageDescriptor, ImageData, ImageFormat, PipelineId};
+use webrender_traits::{ImageDescriptor, ImageData, ImageFormat, PipelineId, DynamicProperties};
 use webrender_traits::{LayoutSize, LayoutPoint, LayoutRect, LayoutTransform, DeviceUintSize};
 
 fn load_file(name: &str) -> Vec<u8> {
@@ -108,8 +108,14 @@ fn main() {
         builder.new_clip_region(&bounds, vec![complex], None)
     };
 
-    let transform = LayoutTransform::identity();
-    let transform = webrender_traits::PropertyBinding::Value(transform);
+    // Create binding keys for animating the opacity and transform.
+    let animated_transform_key = api.generate_property_binding_key();
+    let animated_opacity_key = api.generate_property_binding_key();
+
+    // Create the properties to store in the stacking context that
+    // point to the binding keys.
+    let opacity = webrender_traits::PropertyBinding::Binding(animated_opacity_key);
+    let transform = webrender_traits::PropertyBinding::Binding(animated_transform_key);
 
     builder.push_stacking_context(webrender_traits::ScrollPolicy::Scrollable,
                                   bounds,
@@ -118,7 +124,7 @@ fn main() {
                                   transform,
                                   LayoutTransform::identity(),
                                   webrender_traits::MixBlendMode::Normal,
-                                  Vec::new());
+                                  vec![ webrender_traits::FilterOp::Opacity(opacity) ]);
 
     let sub_clip = {
         let mask = webrender_traits::ImageMask {
@@ -240,7 +246,35 @@ fn main() {
     api.set_root_pipeline(pipeline_id);
     api.generate_frame(None);
 
+    let mut current_x = 0.0;
+    let mut current_opacity = 0.0;
+    let mut delta_x = 1.0;
+    let mut delta_opacity = 0.002;
+
     for event in window.wait_events() {
+        // Create a list of the current animated property values.
+        let transform = LayoutTransform::identity().pre_translated(current_x, 0.0, 0.0);
+        let properties = DynamicProperties {
+            transforms: vec![ animated_transform_key.with(transform) ],
+            floats: vec![ animated_opacity_key.with(current_opacity) ],
+        };
+        // Generate a new frame with the current animated property values.
+        api.generate_frame(Some(properties));
+
+        // ok, this is not great animation but it works!
+        current_x += delta_x;
+        if current_x > 500.0 {
+            delta_x = -1.0;
+        } else if current_x < 0.0 {
+            delta_x = 1.0;
+        }
+        current_opacity += delta_opacity;
+        if current_opacity > 1.0 {
+            delta_opacity = -0.002;
+        } else if current_opacity < 0.0 {
+            delta_opacity = 0.002;
+        }
+
         renderer.update();
 
         renderer.render(DeviceUintSize::new(width, height));

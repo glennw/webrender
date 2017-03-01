@@ -73,18 +73,21 @@ impl ClipScrollTree {
                           content_size: &LayerSize) {
         debug_assert!(self.nodes.is_empty());
 
-        let identity = LayerToScrollTransform::identity();
+        let identity = LayerToScrollTransform::create_translation(0.0, 0.0, 0.0);// identity();
         let viewport = LayerRect::new(LayerPoint::zero(), *viewport_size);
+        let clip1 = LayerRect::new(LayerPoint::new(0.0, -200.0), LayerSize::new(viewport_size.width, viewport_size.height + 200.0));
+        let clip2 = LayerRect::new(LayerPoint::new(0.0, -200.0), LayerSize::new(viewport_size.width, viewport_size.height + 200.0));
 
         let root_reference_frame_id = ScrollLayerId::root_reference_frame(pipeline_id);
         self.root_reference_frame_id = root_reference_frame_id;
         let reference_frame = ClipScrollNode::new_reference_frame(&viewport,
+                                                                  &clip1,        // CLIPTODO
                                                                   viewport.size,
                                                                   &identity,
                                                                   pipeline_id);
         self.nodes.insert(self.root_reference_frame_id, reference_frame);
 
-        let scroll_node = ClipScrollNode::new(&viewport, *content_size, pipeline_id);
+        let scroll_node = ClipScrollNode::new(&viewport, &clip2, *content_size, pipeline_id);        // CLIPTODO
         let topmost_scroll_layer_id = ScrollLayerId::root_scroll_layer(pipeline_id);
         self.topmost_scroll_layer_id = topmost_scroll_layer_id;
         self.add_node(scroll_node, topmost_scroll_layer_id, root_reference_frame_id);
@@ -297,7 +300,8 @@ impl ClipScrollTree {
         }
 
         let root_reference_frame_id = self.root_reference_frame_id();
-        let root_viewport = self.nodes[&root_reference_frame_id].local_viewport_rect;
+        let root_viewport = self.nodes[&root_reference_frame_id].local_clip_rect;
+        println!("** update_all_node_transforms {:?}", root_viewport);
         self.update_node_transform(root_reference_frame_id,
                                    &LayerToWorldTransform::identity(),
                                    &as_scroll_parent_rect(&root_viewport),
@@ -307,7 +311,7 @@ impl ClipScrollTree {
     fn update_node_transform(&mut self,
                              layer_id: ScrollLayerId,
                              parent_reference_frame_transform: &LayerToWorldTransform,
-                             parent_viewport_rect: &ScrollLayerRect,
+                             parent_clip_rect: &ScrollLayerRect,
                              parent_accumulated_scroll_offset: LayerPoint) {
         // TODO(gw): This is an ugly borrow check workaround to clone these.
         //           Restructure this to avoid the clones!
@@ -315,7 +319,7 @@ impl ClipScrollTree {
             match self.nodes.get_mut(&layer_id) {
                 Some(node) => {
                     node.update_transform(parent_reference_frame_transform,
-                                          parent_viewport_rect,
+                                          parent_clip_rect,
                                           parent_accumulated_scroll_offset);
 
                     // The transformation we are passing is the transformation of the parent
@@ -382,6 +386,7 @@ impl ClipScrollTree {
 
     pub fn add_reference_frame(&mut self,
                                rect: LayerRect,
+                               clip_rect: LayerRect,
                                transform: LayerToScrollTransform,
                                pipeline_id: PipelineId,
                                parent_id: ScrollLayerId) -> ScrollLayerId {
@@ -391,7 +396,7 @@ impl ClipScrollTree {
         };
         self.current_reference_frame_id += 1;
 
-        let node = ClipScrollNode::new_reference_frame(&rect, rect.size, &transform, pipeline_id);
+        let node = ClipScrollNode::new_reference_frame(&rect, &clip_rect, rect.size, &transform, pipeline_id);
         self.add_node(node, reference_frame_id, parent_id);
         reference_frame_id
     }

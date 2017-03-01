@@ -1359,17 +1359,19 @@ impl Renderer {
                                    ORTHO_NEAR_PLANE,
                                    ORTHO_FAR_PLANE)
                 ),
-                None => (
-                    background_color.map_or(self.clear_color.to_array(), |color| {
+                None => {
+                    let color = background_color.map_or(self.clear_color.to_array(), |color| {
                         color.to_array()
-                    }),
-                    Matrix4D::ortho(0.0,
+                    });
+                    let ortho = Matrix4D::ortho(0.0,
                                    target_size.width as f32,
                                    target_size.height as f32,
                                    0.0,
                                    ORTHO_NEAR_PLANE,
-                                   ORTHO_FAR_PLANE)
-                ),
+                                   ORTHO_FAR_PLANE);
+                    let shift = Matrix4D::create_translation(0.0, 200.0, 0.0);
+                    (color, ortho.pre_mul(&shift))
+                }
             };
 
             let clear_depth = Some(1.0);

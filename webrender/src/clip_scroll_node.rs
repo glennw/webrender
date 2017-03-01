@@ -35,6 +35,7 @@ pub struct ClipScrollNode {
     pub content_size: LayerSize,
 
     /// Viewing rectangle in the coordinate system of the parent reference frame.
+    pub local_clip_rect: LayerRect,
     pub local_viewport_rect: LayerRect,
 
     /// Viewport rectangle clipped against parent layer(s) viewport rectangles.
@@ -61,14 +62,17 @@ pub struct ClipScrollNode {
 
 impl ClipScrollNode {
     pub fn new(local_viewport_rect: &LayerRect,
+               local_clip_rect: &LayerRect,
                content_size: LayerSize,
                pipeline_id: PipelineId)
                -> ClipScrollNode {
+        println!("ClipScrollNode::new {:?} {:?} {:?}", local_viewport_rect, local_clip_rect, content_size);
         ClipScrollNode {
             scrolling: ScrollingState::new(),
             content_size: content_size,
             local_viewport_rect: *local_viewport_rect,
-            combined_local_viewport_rect: *local_viewport_rect,
+            local_clip_rect: *local_clip_rect,
+            combined_local_viewport_rect: *local_clip_rect,
             world_viewport_transform: LayerToWorldTransform::identity(),
             world_content_transform: LayerToWorldTransform::identity(),
             children: Vec::new(),
@@ -78,15 +82,18 @@ impl ClipScrollNode {
     }
 
     pub fn new_reference_frame(local_viewport_rect: &LayerRect,
+                               local_clip_rect: &LayerRect,
                                content_size: LayerSize,
                                local_transform: &LayerToScrollTransform,
                                pipeline_id: PipelineId)
                                -> ClipScrollNode {
+        println!("new_reference_frame {:?} {:?} {:?}", local_viewport_rect, local_clip_rect, content_size);
         ClipScrollNode {
             scrolling: ScrollingState::new(),
             content_size: content_size,
             local_viewport_rect: *local_viewport_rect,
-            combined_local_viewport_rect: *local_viewport_rect,
+            local_clip_rect: *local_clip_rect,
+            combined_local_viewport_rect: *local_clip_rect,
             world_viewport_transform: LayerToWorldTransform::identity(),
             world_content_transform: LayerToWorldTransform::identity(),
             children: Vec::new(),
@@ -146,7 +153,7 @@ impl ClipScrollNode {
 
     pub fn update_transform(&mut self,
                             parent_reference_frame_transform: &LayerToWorldTransform,
-                            parent_combined_viewport_rect: &ScrollLayerRect,
+                            parent_combined_clip_rect: &ScrollLayerRect,
                             parent_accumulated_scroll_offset: LayerPoint) {
 
         let local_transform = match self.node_type {
@@ -171,14 +178,18 @@ impl ClipScrollNode {
             inv_transform.pre_translated(-parent_accumulated_scroll_offset.x,
                                          -parent_accumulated_scroll_offset.y,
                                          0.0)
-                         .transform_rect(parent_combined_viewport_rect);
+                         .transform_rect(parent_combined_clip_rect);
+
+        println!("DO: {:?} + {:?} => {:?}", parent_combined_clip_rect, parent_accumulated_scroll_offset, parent_combined_viewport_in_local_space);
 
         // Now that we have the combined viewport rectangle of the parent nodes in local space,
         // we do the intersection and get our combined viewport rect in the coordinate system
         // starting from our origin.
         self.combined_local_viewport_rect =
-            parent_combined_viewport_in_local_space.intersection(&self.local_viewport_rect)
+            parent_combined_viewport_in_local_space.intersection(&self.local_clip_rect)
                                                     .unwrap_or(LayerRect::zero());
+
+        println!("## {:?} int {:?} -> {:?}", self.local_clip_rect, parent_combined_viewport_in_local_space, self.combined_local_viewport_rect);
 
         // The transformation for this viewport in world coordinates is the transformation for
         // our parent reference frame, plus any accumulated scrolling offsets from nodes

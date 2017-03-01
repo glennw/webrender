@@ -287,7 +287,8 @@ impl Frame {
             debug_assert!(reference_frame_id != topmost_scroll_layer_id);
 
             let viewport_rect = LayerRect::new(LayerPoint::zero(), root_pipeline.viewport_size);
-            let clip = ClipRegion::simple(&viewport_rect);
+            let clip_rect = LayerRect::new(LayerPoint::zero(), LayerSize::new(root_pipeline.viewport_size.width, root_pipeline.viewport_size.height + 200.0));
+            let clip = ClipRegion::simple(&clip_rect);
             context.builder.push_clip_scroll_node(reference_frame_id, &clip);
             context.builder.push_clip_scroll_node(topmost_scroll_layer_id, &clip);
 
@@ -327,7 +328,7 @@ impl Frame {
         }
 
         let clip_rect = clip.main.translate(&reference_frame_relative_offset);
-        let node = ClipScrollNode::new(&clip_rect, *content_size, pipeline_id);
+        let node = ClipScrollNode::new(&clip_rect, &clip_rect, *content_size, pipeline_id);         // CLIPTODO
         self.clip_scroll_tree.add_node(node, new_scroll_layer_id, parent_scroll_layer_id);
         context.builder.push_clip_scroll_node(new_scroll_layer_id, clip);
 
@@ -409,6 +410,7 @@ impl Frame {
                                         .pre_mul(&stacking_context_transform)
                                         .pre_mul(&stacking_context.perspective);
             scroll_layer_id = self.clip_scroll_tree.add_reference_frame(clip_region.main,
+                                                                        clip_region.main,           // CLIPTODO
                                                                         transform,
                                                                         pipeline_id,
                                                                         scroll_layer_id);
@@ -505,11 +507,13 @@ impl Frame {
             0.0);
         let iframe_reference_frame_id =
             self.clip_scroll_tree.add_reference_frame(iframe_rect,
+                                                      iframe_rect,              // CLIPTODO
                                                       transform,
                                                       pipeline_id,
                                                       current_scroll_layer_id);
         let iframe_scroll_layer_id = ScrollLayerId::root_scroll_layer(pipeline_id);
         let node = ClipScrollNode::new(&LayerRect::new(LayerPoint::zero(), iframe_rect.size),
+                                       &LayerRect::new(LayerPoint::zero(), iframe_rect.size),         // CLIPTODO
                                        iframe_clip.main.size,
                                        pipeline_id);
         self.clip_scroll_tree.add_node(node.clone(),

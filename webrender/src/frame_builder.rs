@@ -1270,6 +1270,7 @@ impl<'a> LayerRectCalculationAndCullingPass<'a> {
                      .translate(&-stacking_context.reference_frame_offset)
                      .translate(&-node.scrolling.offset);
             let intersected_rect = stacking_context.local_rect.intersection(viewport_rect);
+            println!("set_rect1 {:?} [{:?} {:?}] {:?}", intersected_rect, viewport_rect, stacking_context.local_rect, node.combined_local_viewport_rect);
 
             group.xf_rect = packed_layer.set_rect(intersected_rect,
                                                   self.screen_rect,
@@ -1317,6 +1318,7 @@ impl<'a> LayerRectCalculationAndCullingPass<'a> {
         let packed_layer = &mut self.frame_builder.packed_layers[packed_layer_index.0];
 
         packed_layer.set_transform(node.world_viewport_transform);
+        println!("set_rect2 {:?}", node.combined_local_viewport_rect);
         scroll_layer.xf_rect = packed_layer.set_rect(Some(node.combined_local_viewport_rect),
                                                      self.screen_rect,
                                                      self.device_pixel_ratio);

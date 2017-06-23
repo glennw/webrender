@@ -1677,9 +1677,27 @@ impl Device {
                                    y0: u32,
                                    width: u32,
                                    height: u32,
+                                   stride: Option<u32>,
                                    offset: usize) {
         debug_assert!(self.inside_frame);
-        debug_assert_eq!(self.textures.get(&texture_id).unwrap().format, ImageFormat::RGBAF32);
+
+        let (gl_format, bpp, data_type) = match self.textures.get(&texture_id).unwrap().format {
+            ImageFormat::A8 => panic!("A8 updates not supported from PBO, yet (android expanding code)"),
+            ImageFormat::RGB8 => (gl::RGB, 3, gl::UNSIGNED_BYTE),
+            ImageFormat::BGRA8 => (get_gl_format_bgra(self.gl()), 4, gl::UNSIGNED_BYTE),
+            ImageFormat::RG8 => (gl::RG, 2, gl::UNSIGNED_BYTE),
+            ImageFormat::RGBAF32 => (gl::RGBA, 16, gl::FLOAT),
+            ImageFormat::Invalid => unreachable!(),
+        };
+
+        let row_length = match stride {
+            Some(value) => value / bpp,
+            None => width,
+        };
+
+        if let Some(..) = stride {
+            self.gl.pixel_store_i(gl::UNPACK_ROW_LENGTH, row_length as gl::GLint);
+        }
 
         self.bind_texture(DEFAULT_TEXTURE, texture_id);
 
@@ -1689,9 +1707,14 @@ impl Device {
                                      y0 as gl::GLint,
                                      width as gl::GLint,
                                      height as gl::GLint,
-                                     gl::RGBA,
-                                     gl::FLOAT,
+                                     gl_format,
+                                     data_type,
                                      offset);
+
+        // Reset row length to 0, otherwise the stride would apply to all texture uploads.
+        if let Some(..) = stride {
+            self.gl.pixel_store_i(gl::UNPACK_ROW_LENGTH, 0 as gl::GLint);
+        }
     }
 
     pub fn update_texture(&mut self,

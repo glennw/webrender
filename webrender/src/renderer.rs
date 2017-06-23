@@ -301,6 +301,7 @@ impl CacheTexture {
                                                row_index as u32,
                                                MAX_VERTEX_TEXTURE_WIDTH as u32,
                                                1,
+                                               None,
                                                0);
 
                 // Orphan the PBO. This is the recommended way to hint to the
@@ -722,6 +723,9 @@ pub struct Renderer {
     /// via get_frame_profiles().
     cpu_profiles: VecDeque<CpuProfile>,
     gpu_profiles: VecDeque<GpuProfile>,
+
+    /// The PBO used for async. texture cache updates.
+    texture_cache_pbo_id: PBOId,
 }
 
 #[derive(Debug)]
@@ -1098,6 +1102,8 @@ impl Renderer {
         let blur_vao_id = device.create_vao_with_new_instances(VertexFormat::Blur, mem::size_of::<BlurCommand>() as i32, prim_vao_id);
         let clip_vao_id = device.create_vao_with_new_instances(VertexFormat::Clip, mem::size_of::<CacheClipInstance>() as i32, prim_vao_id);
 
+        let texture_cache_pbo_id = device.create_pbo();
+
         device.end_frame();
 
         let main_thread_dispatcher = Arc::new(Mutex::new(None));
@@ -1224,6 +1230,7 @@ impl Renderer {
             cpu_profiles: VecDeque::new(),
             gpu_profiles: VecDeque::new(),
             gpu_cache_texture,
+            texture_cache_pbo_id: texture_cache_pbo_id,
         };
 
         let sender = RenderApiSender::new(api_tx, payload_tx);
@@ -1552,11 +1559,20 @@ impl Renderer {
                     }
                     TextureUpdateOp::Update { page_pos_x, page_pos_y, width, height, data, stride, offset } => {
                         let texture_id = self.cache_texture_id_map[update.id.0];
-                        self.device.update_texture(texture_id,
-                                                   page_pos_x,
-                                                   page_pos_y,
-                                                   width, height, stride,
-                                                   &data[offset as usize..]);
+
+                        self.device.bind_pbo(Some(self.texture_cache_pbo_id));
+                        self.device.update_pbo_data(&data[offset as usize..]);
+
+                        self.device.update_texture_from_pbo(texture_id,
+                                                            page_pos_x,
+                                                            page_pos_y,
+                                                            width,
+                                                            height,
+                                                            stride,
+                                                            0);
+
+                        self.device.orphan_pbo(0);
+                        self.device.bind_pbo(None);
                     }
                     TextureUpdateOp::UpdateForExternalBuffer { rect, id, channel_index, stride, offset } => {
                         let handler = self.external_image_handler

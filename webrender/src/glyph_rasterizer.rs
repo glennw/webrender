@@ -321,12 +321,11 @@ pub struct GlyphRequest {
 }
 
 impl GlyphRequest {
-    pub fn new(
-        font: FontInstanceKey,
-        index: u32,
-        point: LayoutPoint) -> Self {
+    pub fn new(font: FontInstanceKey, index: u32, point: LayoutPoint) -> Self {
+        let key = GlyphKey::new(index, point, font.render_mode, font.subpx_dir);
+
         GlyphRequest {
-            key: GlyphKey::new(index, point, font.render_mode),
+            key,
             font,
         }
     }

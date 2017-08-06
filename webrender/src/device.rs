@@ -332,9 +332,10 @@ impl Program {
     fn attach_and_bind_shaders(&mut self,
                                vs_id: gl::GLuint,
                                fs_id: gl::GLuint,
-                               descriptor: &VertexDescriptor) -> Result<(), ShaderError> {
-        self.gl.attach_shader(self.id, vs_id);
-        self.gl.attach_shader(self.id, fs_id);
+                               descriptor: &VertexDescriptor,
+                               gl: &gl::Gl) -> Result<(), ShaderError> {
+        gl.attach_shader(self.id, vs_id);
+        gl.attach_shader(self.id, fs_id);
 
         for (i, attr) in descriptor.vertex_attributes
                                    .iter()
@@ -1392,7 +1393,7 @@ impl Device {
             fs_id: None,
         };
 
-        try!{ self.load_program(&mut program, include, vertex_format) };
+        try!{ self.load_program(&mut program, include, descriptor) };
 
         Ok(program)
     }

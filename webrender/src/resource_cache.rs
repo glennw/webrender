@@ -41,6 +41,15 @@ pub struct CacheItem {
     pub uv_rect_handle: GpuCacheHandle,
 }
 
+impl CacheItem {
+    fn invalid() -> CacheItem {
+        CacheItem {
+            texture_id: SourceTexture::Invalid,
+            uv_rect_handle: GpuCacheHandle::new(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ImageProperties {
     pub descriptor: ImageDescriptor,
@@ -116,10 +125,8 @@ impl<K,V> ResourceClassCache<K,V> where K: Clone + Hash + Eq + Debug {
         }
     }
 
-    fn get(&self, key: &K) -> &V {
-        self.resources
-            .get(key)
-            .expect("Didn't find a cached resource with that ID!")
+    fn get(&self, key: &K) -> Option<&V> {
+        self.resources.get(key)
     }
 
     pub fn insert(&mut self, key: K, value: V) {
@@ -404,6 +411,16 @@ impl ResourceCache {
                     return;
                 }
 
+                // If the image is too big for hardware texture size (even
+                // after tiling parameters applied), then just early out
+                // and drop the image.
+                if let Some(tile_size) = template.tiling {
+                    if tile_size as u32 > self.texture_cache.max_texture_size() {
+                        warn!("Dropping image, tile size is too big for hardware!");
+                        return;
+                    }
+                }
+
                 // If this image exists in the texture cache, *and* the epoch
                 // in the cache matches that of the template, then it is
                 // valid to use as-is.
@@ -501,7 +518,9 @@ impl ResourceCache {
 
         for (loop_index, key) in glyph_keys.iter().enumerate() {
             let glyph = glyph_key_cache.get(key);
-            let cache_item = glyph.as_ref().map(|info| self.texture_cache.get(&info.texture_cache_handle));
+            let cache_item = glyph.unwrap()
+                                  .as_ref()
+                                  .map(|info| self.texture_cache.get(&info.texture_cache_handle));
             if let Some(cache_item) = cache_item {
                 f(loop_index, &cache_item.uv_rect_handle);
                 debug_assert!(texture_id == None ||
@@ -541,8 +560,17 @@ impl ResourceCache {
             rendering: image_rendering,
             tile,
         };
-        let image_info = &self.cached_images.get(&key);
-        self.texture_cache.get(&image_info.texture_cache_handle)
+        let image_info = self.cached_images.get(&key);
+
+        // If an image was not added to the cache map, just return
+        // an invalid texture ID, which will mean the image doesn't
+        // get rendered.
+        // TODO(gw): Could add a debug option to support drawing
+        //           images that have SourceTexture::Invalid if
+        //           it's useful to see where invalid textures are on screen.
+        image_info.map_or(CacheItem::invalid(), |image_info| {
+            self.texture_cache.get(&image_info.texture_cache_handle)
+        })
     }
 
     pub fn get_image_properties(&self, image_key: ImageKey) -> Option<ImageProperties> {

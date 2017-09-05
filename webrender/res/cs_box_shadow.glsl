@@ -11,12 +11,12 @@ flat varying vec4 vBoxShadowRect;
 flat varying float vInverted;
 
 #ifdef WR_VERTEX_SHADER
-in ivec2 aPrimAddress;
+in int aPrimAddress;
 in int aTaskIndex;
 
 void main(void) {
     RenderTaskData task = fetch_render_task(aTaskIndex);
-    BoxShadow bs = fetch_boxshadow_direct(ivec2(aPrimAddress.x + VECS_PER_PRIM_HEADER, aPrimAddress.y));
+    BoxShadow bs = fetch_boxshadow(aPrimAddress + VECS_PER_PRIM_HEADER);
 
     vec2 p0 = task.data0.xy;
     vec2 p1 = p0 + task.data0.zw;

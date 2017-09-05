@@ -221,7 +221,7 @@ const DESC_CACHE_BOX_SHADOW: VertexDescriptor = VertexDescriptor {
         VertexAttribute { name: "aPosition", count: 2, kind: VertexAttributeKind::F32 },
     ],
     instance_attributes: &[
-        VertexAttribute { name: "aPrimAddress", count: 2, kind: VertexAttributeKind::U16 },
+        VertexAttribute { name: "aPrimAddress", count: 1, kind: VertexAttributeKind::I32 },
         VertexAttribute { name: "aTaskIndex", count: 1, kind: VertexAttributeKind::I32 },
     ]
 };

@@ -1112,7 +1112,7 @@ impl RenderTarget for AlphaRenderTarget {
                 match prim_metadata.prim_kind {
                     PrimitiveKind::BoxShadow => {
                         self.box_shadow_cache_prims.push(BoxShadowCacheInstance {
-                            prim_address: gpu_cache.get_address(&prim_metadata.gpu_location),
+                            prim_address: prim_metadata.gpu_location.as_int(gpu_cache),
                             task_index: render_tasks.get_task_address(task_id),
                         });
                     }

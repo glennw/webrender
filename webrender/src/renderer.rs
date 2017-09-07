@@ -2287,6 +2287,16 @@ impl Renderer {
                     prev_blend_mode = batch.key.blend_mode;
                 }
 
+                for item_rect in &batch.item_rects {
+                    let p0 = item_rect.origin;
+                    let p1 = p0 + item_rect.size;
+                    let color = ColorF::new(1.0, 0.0, 0.0, 1.0).into();
+                    self.debug.add_line(p0.x, p0.y, color, p1.x, p0.y, color);
+                    self.debug.add_line(p1.x, p0.y, color, p1.x, p1.y, color);
+                    self.debug.add_line(p1.x, p1.y, color, p0.x, p1.y, color);
+                    self.debug.add_line(p0.x, p1.y, color, p0.x, p0.y, color);
+                }
+
                 self.submit_batch(&batch.key,
                                   &batch.instances,
                                   &projection,

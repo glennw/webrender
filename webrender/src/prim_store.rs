@@ -1208,8 +1208,6 @@ impl PrimitiveStore {
         render_tasks: &mut RenderTaskTree,
         clip_store: &mut ClipStore,
     ) -> bool {
-        // todo:!!!!!!!!!!!!!!!!!!! update clip task
-        /*
         let metadata = &mut self.cpu_metadata[prim_index.0];
         clip_store.get_mut(&metadata.clip_sources).update(
             &prim_context.packed_layer.transform,
@@ -1263,8 +1261,6 @@ impl PrimitiveStore {
         };
 
         metadata.clip_task_id = clip_task.map(|clip_task| render_tasks.add(clip_task));
-        */
-
         true
     }
 

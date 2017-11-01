@@ -5,7 +5,7 @@
 use api::{ClipId, DeviceIntRect, LayerPixel, LayerPoint, LayerRect, LayerSize};
 use api::{LayerToScrollTransform, LayerToWorldTransform, LayerVector2D, PipelineId};
 use api::{ScrollClamping, ScrollEventPhase, ScrollLocation, ScrollSensitivity, StickyOffsetBounds};
-use api::WorldPoint;
+use api::{WorldPoint, WorldToLayerTransform};
 use clip::{ClipRegion, ClipSources, ClipSourcesHandle, ClipStore};
 use clip_scroll_tree::{CoordinateSystemId, TransformUpdateState};
 use euclid::SideOffsets2D;
@@ -413,7 +413,7 @@ impl ClipScrollNode {
 
         reference_frames.push(ReferenceFrame {
             transform: self.world_content_transform,
-            inv_transform: self.world_content_transform.inverse().expect("bug: invalid transform. todo!!!"),
+            inv_transform: self.world_content_transform.inverse().unwrap_or(WorldToLayerTransform::identity()),
             transform_kind,
             padding: [0; 15],
         });

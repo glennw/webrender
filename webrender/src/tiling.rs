@@ -849,7 +849,7 @@ impl ClipBatcher {
         geometry_kind: MaskGeometryKind,
         clip_store: &ClipStore,
     ) {
-        panic!("todo");
+        // todo: !!!!!!!!!!!!!!!!!!!!!!!! add some clips!!!!!!!!!!!!!!
         /*
         let mut coordinate_system_id = coordinate_system_id;
         for work_item in clips.iter() {
@@ -1210,8 +1210,6 @@ impl RenderTarget for ColorRenderTarget {
 
                         for run in &prim.prim_runs {
                             for i in 0 .. run.count {
-                                panic!("todo");
-                                /*
                                 let sub_prim_index = PrimitiveIndex(run.prim_index.0 + i);
 
                                 let sub_metadata = ctx.prim_store.get_metadata(sub_prim_index);
@@ -1221,7 +1219,7 @@ impl RenderTarget for ColorRenderTarget {
                                     sub_prim_address,
                                     task_index,
                                     RenderTaskAddress(0),
-                                    PackedLayerIndex(0).into(),
+                                    ReferenceFrameIndex(0),
                                     0,
                                 ); // z is disabled for rendering cache primitives
 
@@ -1263,7 +1261,7 @@ impl RenderTarget for ColorRenderTarget {
                                     _ => {
                                         unreachable!("Unexpected sub primitive type");
                                     }
-                                }*/
+                                }
                             }
                         }
                     }

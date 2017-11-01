@@ -66,7 +66,7 @@ void main(void) {
         gl_Position = uTransform * vec4(device_pos, 0.0, 1.0);
     } else {
         AlphaBatchTask alpha_task = fetch_alpha_batch_task(brush.picture_address);
-        Layer layer = fetch_layer(brush.layer_address);
+        Layer layer = fetch_layer(brush.ref_frame_address);
         ClipArea clip_area = fetch_clip_area(brush.clip_address);
 
         // Write the normal vertex information out.

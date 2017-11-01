@@ -617,12 +617,10 @@ impl AlphaRenderItem {
                                 }
                             }
                         };
-                        panic!("todo");
-                        /*
                         let instance = BrushInstance {
                             picture_address: task_address,
                             prim_address: prim_cache_address,
-                            layer_address: packed_layer_index.into(),
+                            ref_frame_index,
                             clip_task_address,
                             z,
                             flags: 0,
@@ -630,7 +628,6 @@ impl AlphaRenderItem {
                             user_data1: image_kind as i32,
                         };
                         batch.push(PrimitiveInstance::from(instance));
-                        */
                     }
                     PrimitiveKind::AlignedGradient => {
                         let gradient_cpu =

@@ -15,7 +15,7 @@ use glyph_rasterizer::GlyphFormat;
 use gpu_cache::{GpuCache, GpuCacheAddress, GpuCacheHandle, GpuCacheUpdateList};
 use gpu_types::{BlurDirection, BlurInstance, BrushInstance, BrushImageKind, ClipMaskInstance};
 use gpu_types::{CompositePrimitiveInstance, PrimitiveInstance, SimplePrimitiveInstance};
-use gpu_types::{BRUSH_FLAG_USES_PICTURE, ReferenceFrame};
+use gpu_types::{BRUSH_FLAG_USES_PICTURE, ReferenceFrame, ReferenceFrameIndex};
 use internal_types::{FastHashMap, SourceTexture};
 use internal_types::BatchTextures;
 use picture::PictureKind;
@@ -1381,8 +1381,6 @@ impl RenderTarget for AlphaRenderTarget {
                                 let sub_prim_address =
                                     gpu_cache.get_address(&sub_metadata.gpu_location);
 
-                                panic!("todo");
-                                /*
                                 match sub_metadata.prim_kind {
                                     PrimitiveKind::Brush => {
                                         let instance = BrushInstance {
@@ -1393,7 +1391,7 @@ impl RenderTarget for AlphaRenderTarget {
                                             //           tasks support clip masks and
                                             //           transform primitives, these
                                             //           will need to be filled out!
-                                            layer_address: PackedLayerIndex(0).into(),
+                                            ref_frame_index: ReferenceFrameIndex(0),
                                             clip_task_address: RenderTaskAddress(0),
                                             z: 0,
                                             flags: BRUSH_FLAG_USES_PICTURE,
@@ -1414,7 +1412,7 @@ impl RenderTarget for AlphaRenderTarget {
                                     _ => {
                                         unreachable!("Unexpected sub primitive type");
                                     }
-                                }*/
+                                }
                             }
                         }
                     }

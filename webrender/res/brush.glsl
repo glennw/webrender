@@ -19,7 +19,7 @@ void brush_vs(
 struct BrushInstance {
     int picture_address;
     int prim_address;
-    int layer_address;
+    int ref_frame_address;
     int clip_address;
     int z;
     int flags;
@@ -31,7 +31,7 @@ BrushInstance load_brush() {
 
     bi.picture_address = aData0.x;
     bi.prim_address = aData0.y;
-    bi.layer_address = aData0.z;
+    bi.ref_frame_address = aData0.z;
     bi.clip_address = aData0.w;
     bi.z = aData1.x;
     bi.flags = aData1.y;

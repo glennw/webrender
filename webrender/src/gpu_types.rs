@@ -159,7 +159,7 @@ pub const BRUSH_FLAG_USES_PICTURE: i32 = (1 << 0);
 pub struct BrushInstance {
     pub picture_address: RenderTaskAddress,
     pub prim_address: GpuCacheAddress,
-    pub layer_address: PackedLayerAddress,
+    pub ref_frame_index: ReferenceFrameIndex,
     pub clip_task_address: RenderTaskAddress,
     pub z: i32,
     pub flags: i32,
@@ -173,7 +173,7 @@ impl From<BrushInstance> for PrimitiveInstance {
             data: [
                 instance.picture_address.0 as i32,
                 instance.prim_address.as_int(),
-                instance.layer_address.0,
+                instance.ref_frame_index.0 as i32,
                 instance.clip_task_address.0 as i32,
                 instance.z,
                 instance.flags,

@@ -20,6 +20,7 @@ use clip_scroll_tree::{ClipScrollTree, CoordinateSystemId};
 use euclid::{SideOffsets2D, TypedTransform3D, vec2, vec3};
 use frame::FrameId;
 use gpu_cache::GpuCache;
+use gpu_types::{ReferenceFrame, ReferenceFrameIndex};
 use internal_types::{FastHashMap, FastHashSet, HardwareCompositeOp};
 use picture::{PicturePrimitive};
 use plane_split::{BspSplitter, Polygon, Splitter};
@@ -34,9 +35,9 @@ use render_task::RenderTaskTree;
 use resource_cache::ResourceCache;
 use scene::ScenePipeline;
 use std::{mem, usize, f32, i32};
-use tiling::{ClipScrollGroup, ClipScrollGroupIndex, CompositeOps, Frame};
+use tiling::{CompositeOps, Frame};
 use tiling::{ContextIsolation, RenderTargetKind, StackingContextIndex};
-use tiling::{PackedLayer, PackedLayerIndex, PrimitiveFlags, PrimitiveRunCmd, RenderPass};
+use tiling::{PrimitiveFlags, PrimitiveRunCmd, RenderPass};
 use tiling::{RenderTargetContext, ScrollbarPrimitive, StackingContext};
 use util::{self, pack_as_float, RectHelpers, recycle_vec};
 use box_shadow::BLUR_SAMPLE_SCALE;
@@ -113,11 +114,6 @@ pub struct FrameBuilder {
     pub config: FrameBuilderConfig,
 
     stacking_context_store: Vec<StackingContext>,
-    clip_scroll_group_store: Vec<ClipScrollGroup>,
-    // Note: value here is meant to be `ClipScrollGroupIndex`,
-    // but we already have `ClipAndScrollInfo` in the key
-    clip_scroll_group_indices: FastHashMap<ClipAndScrollInfo, usize>,
-    packed_layers: Vec<PackedLayer>,
 
     // A stack of the current shadow primitives.
     // The sub-Vec stores a buffer of fast-path primitives to be appended on pop.
@@ -141,35 +137,38 @@ pub struct FrameBuilder {
 }
 
 pub struct PrimitiveContext<'a> {
-    pub packed_layer_index: PackedLayerIndex,
-    pub packed_layer: &'a PackedLayer,
+    pub reference_frame_index: ReferenceFrameIndex,
+    //pub packed_layer_index: PackedLayerIndex,
+    //pub packed_layer: &'a PackedLayer,
     pub device_pixel_ratio: f32,
-    pub clip_chain: ClipChain,
-    pub clip_bounds: DeviceIntRect,
-    pub clip_id: ClipId,
-    pub coordinate_system_id: CoordinateSystemId,
+    //pub clip_chain: ClipChain,
+    //pub clip_bounds: DeviceIntRect,
+    //pub clip_id: ClipId,
+    //pub coordinate_system_id: CoordinateSystemId,
     pub display_list: &'a BuiltDisplayList,
 }
 
 impl<'a> PrimitiveContext<'a> {
     fn new(
-        packed_layer_index: PackedLayerIndex,
-        packed_layer: &'a PackedLayer,
-        clip_id: ClipId,
-        clip_chain: ClipChain,
-        clip_bounds: DeviceIntRect,
-        coordinate_system_id: CoordinateSystemId,
+        reference_frame_index: ReferenceFrameIndex,
+        //packed_layer_index: PackedLayerIndex,
+        //packed_layer: &'a PackedLayer,
+        //clip_id: ClipId,
+        //clip_chain: ClipChain,
+        //clip_bounds: DeviceIntRect,
+        //coordinate_system_id: CoordinateSystemId,
         device_pixel_ratio: f32,
         display_list: &'a BuiltDisplayList,
     ) -> Self {
         PrimitiveContext {
-            packed_layer_index,
-            packed_layer,
-            clip_chain,
-            clip_bounds,
-            coordinate_system_id,
+            reference_frame_index,
+            //packed_layer_index,
+            //packed_layer,
+            //clip_chain,
+            //clip_bounds,
+            //coordinate_system_id,
             device_pixel_ratio,
-            clip_id,
+            //clip_id,
             display_list,
         }
     }
@@ -185,11 +184,8 @@ impl FrameBuilder {
         match previous {
             Some(prev) => FrameBuilder {
                 stacking_context_store: recycle_vec(prev.stacking_context_store),
-                clip_scroll_group_store: recycle_vec(prev.clip_scroll_group_store),
-                clip_scroll_group_indices: FastHashMap::default(),
                 cmds: recycle_vec(prev.cmds),
                 hit_testing_runs: recycle_vec(prev.hit_testing_runs),
-                packed_layers: recycle_vec(prev.packed_layers),
                 shadow_prim_stack: recycle_vec(prev.shadow_prim_stack),
                 pending_shadow_contents: recycle_vec(prev.pending_shadow_contents),
                 scrollbar_prims: recycle_vec(prev.scrollbar_prims),
@@ -204,11 +200,8 @@ impl FrameBuilder {
             },
             None => FrameBuilder {
                 stacking_context_store: Vec::new(),
-                clip_scroll_group_store: Vec::new(),
-                clip_scroll_group_indices: FastHashMap::default(),
                 cmds: Vec::new(),
                 hit_testing_runs: Vec::new(),
-                packed_layers: Vec::new(),
                 shadow_prim_stack: Vec::new(),
                 pending_shadow_contents: Vec::new(),
                 scrollbar_prims: Vec::new(),
@@ -234,10 +227,11 @@ impl FrameBuilder {
         mut clip_sources: Vec<ClipSource>,
         container: PrimitiveContainer,
     ) -> PrimitiveIndex {
+        /*
         if !self.clip_scroll_group_indices.contains_key(&clip_and_scroll) {
             let group_id = self.create_clip_scroll_group(&clip_and_scroll);
             self.clip_scroll_group_indices.insert(clip_and_scroll, group_id);
-        }
+        }*/
 
         if let &LocalClip::RoundedRect(main, region) = &info.local_clip {
             clip_sources.push(ClipSource::Rectangle(main));
@@ -328,6 +322,7 @@ impl FrameBuilder {
         prim_index
     }
 
+/*
     fn create_clip_scroll_group(&mut self, info: &ClipAndScrollInfo) -> usize {
         let packed_layer_index = PackedLayerIndex(self.packed_layers.len());
         self.packed_layers.push(PackedLayer::empty());
@@ -343,6 +338,7 @@ impl FrameBuilder {
 
         group_id
     }
+*/
 
     pub fn notify_waiting_for_root_stacking_context(&mut self) {
         self.has_root_stacking_context = false;
@@ -520,12 +516,10 @@ impl FrameBuilder {
         let clip_rect = LayerRect::new(clip_region.origin, clip_region.main.size);
         let clip_info = ClipInfo::new(
             clip_region,
-            PackedLayerIndex(self.packed_layers.len()),
             &mut self.clip_store,
         );
         let node = ClipScrollNode::new_clip_node(pipeline_id, parent_id, clip_info, clip_rect);
         clip_scroll_tree.add_node(node, new_node_id);
-        self.packed_layers.push(PackedLayer::empty());
     }
 
     pub fn add_scroll_frame(
@@ -1316,6 +1310,7 @@ impl FrameBuilder {
         stacking_context.isolated_items_bounds = LayerRect::zero();
     }
 
+/*
     pub fn get_packed_layer_index_if_visible(
         &self,
         clip_and_scroll: &ClipAndScrollInfo
@@ -1328,6 +1323,7 @@ impl FrameBuilder {
             None
         }
     }
+*/
 
     pub fn hit_test(
         &self,
@@ -1410,9 +1406,15 @@ impl FrameBuilder {
         pipelines: &FastHashMap<PipelineId, ScenePipeline>,
         clip_scroll_tree: &ClipScrollTree,
         device_pixel_ratio: f32,
+        reference_frames: &[ReferenceFrame],
         profile_counters: &mut FrameProfileCounters,
     ) -> bool {
         let stacking_context_index = *self.stacking_context_stack.last().unwrap();
+
+        let scroll_node = &clip_scroll_tree.nodes[&clip_and_scroll.scroll_node_id];
+        let reference_frame_index = scroll_node.reference_frame_index;
+
+        /*
         let packed_layer_index =
             match self.get_packed_layer_index_if_visible(&clip_and_scroll) {
             Some(index) => index,
@@ -1420,8 +1422,9 @@ impl FrameBuilder {
                 debug!("{:?} of invisible {:?}", base_prim_index, stacking_context_index);
                 return false;
             }
-        };
+        };*/
 
+/*
         let (clip_chain, clip_bounds, coordinate_system_id) =
             match clip_scroll_tree.nodes.get(&clip_and_scroll.clip_node_id()) {
             Some(node) if node.combined_clip_outer_bounds != DeviceIntRect::zero() => {
@@ -1440,6 +1443,7 @@ impl FrameBuilder {
                 return false;
             }
         };
+*/
 
         let stacking_context = &mut self.stacking_context_store[stacking_context_index.0];
         let pipeline_id = {
@@ -1453,39 +1457,46 @@ impl FrameBuilder {
             stacking_context.pipeline_id
         };
 
+/*
         debug!(
             "\t{:?} of {:?} at {:?}",
             base_prim_index,
             stacking_context_index,
             packed_layer_index
         );
+*/
 
-        let packed_layer = &self.packed_layers[packed_layer_index.0];
+        //let packed_layer = &self.packed_layers[packed_layer_index.0];
         let display_list = &pipelines
             .get(&pipeline_id)
             .expect("No display list?")
             .display_list;
 
+        // TODO: Check on *reference frame*, not packed layer
+        /*
         if !stacking_context.is_backface_visible && packed_layer.transform.is_backface_visible() {
             return false;
-        }
+        }*/
 
         let prim_context = PrimitiveContext::new(
-            packed_layer_index,
-            packed_layer,
-            clip_and_scroll.clip_node_id(),
-            clip_chain,
-            clip_bounds,
-            coordinate_system_id,
+            reference_frame_index,
+            //packed_layer_index,
+            //packed_layer,
+            //clip_and_scroll.clip_node_id(),
+            //clip_chain,
+            //clip_bounds,
+            //coordinate_system_id,
             device_pixel_ratio,
             display_list,
         );
 
+/*
         debug!(
             "\tclip_bounds {:?}, layer_local_clip {:?}",
             prim_context.clip_bounds,
             packed_layer.local_clip_rect
         );
+*/
 
         for i in 0 .. prim_count {
             let prim_index = PrimitiveIndex(base_prim_index.0 + i);
@@ -1497,6 +1508,7 @@ impl FrameBuilder {
                 gpu_cache,
                 render_tasks,
                 &mut self.clip_store,
+                reference_frames,
             ) {
                 stacking_context.screen_bounds = stacking_context
                     .screen_bounds
@@ -1576,6 +1588,7 @@ impl FrameBuilder {
         screen_rect: &DeviceIntRect,
         device_pixel_ratio: f32
     ) {
+        /*
         debug!("recalculate_clip_scroll_groups");
         for ref mut group in &mut self.clip_scroll_group_store {
             let scroll_node = &clip_scroll_tree.nodes[&group.scroll_node_id];
@@ -1616,7 +1629,7 @@ impl FrameBuilder {
                 local_viewport_rect,
                 group.screen_bounding_rect
             );
-        }
+        }*/
     }
 
     /// Compute the contribution (bounding rectangles, and resources) of layers and their
@@ -1630,6 +1643,7 @@ impl FrameBuilder {
         gpu_cache: &mut GpuCache,
         render_tasks: &mut RenderTaskTree,
         profile_counters: &mut FrameProfileCounters,
+        reference_frames: &[ReferenceFrame],
         device_pixel_ratio: f32,
     ) {
         profile_scope!("cull");
@@ -1658,6 +1672,7 @@ impl FrameBuilder {
                         pipelines,
                         clip_scroll_tree,
                         device_pixel_ratio,
+                        reference_frames,
                         profile_counters,
                     );
                 }
@@ -1992,6 +2007,10 @@ impl FrameBuilder {
                         continue;
                     }
 
+                    let scroll_node = &clip_scroll_tree.nodes[&clip_and_scroll.scroll_node_id];
+                    let reference_frame_index = scroll_node.reference_frame_index;
+
+/*
                     let group_id = self.clip_scroll_group_indices[&clip_and_scroll];
                     let group_index = ClipScrollGroupIndex(group_id, clip_and_scroll);
 
@@ -2002,7 +2021,7 @@ impl FrameBuilder {
                         debug!("\tcs-group {:?} screen rect is None", group_index);
                         continue;
                     }
-
+*/
                     debug!("\trun of {} items", prim_count);
 
                     for i in 0 .. prim_count {
@@ -2012,7 +2031,7 @@ impl FrameBuilder {
                             self.prim_store
                                 .add_render_tasks_for_prim(prim_index, &mut current_task);
                             let item =
-                                AlphaRenderItem::Primitive(Some(group_index), prim_index, next_z);
+                                AlphaRenderItem::Primitive(reference_frame_index, prim_index, next_z);
                             current_task.as_alpha_batch_mut().items.push(item);
                             next_z += 1;
                         }
@@ -2057,14 +2076,16 @@ impl FrameBuilder {
             ),
         );
 
+        let mut reference_frames = Vec::new();
+
         clip_scroll_tree.update_all_node_transforms(
             &screen_rect,
             device_pixel_ratio,
-            &mut self.packed_layers,
             &mut self.clip_store,
             resource_cache,
             gpu_cache,
-            pan
+            pan,
+            &mut reference_frames,
         );
 
         self.update_scroll_bars(clip_scroll_tree, gpu_cache);
@@ -2079,6 +2100,7 @@ impl FrameBuilder {
             gpu_cache,
             &mut render_tasks,
             &mut profile_counters,
+            &reference_frames,
             device_pixel_ratio,
         );
 
@@ -2111,9 +2133,9 @@ impl FrameBuilder {
             let ctx = RenderTargetContext {
                 device_pixel_ratio,
                 stacking_context_store: &self.stacking_context_store,
-                clip_scroll_group_store: &self.clip_scroll_group_store,
                 prim_store: &self.prim_store,
                 resource_cache,
+                reference_frames: &reference_frames,
             };
 
             pass.build(
@@ -2145,7 +2167,7 @@ impl FrameBuilder {
             window_size: self.screen_size,
             profile_counters,
             passes,
-            layer_texture_data: self.packed_layers.clone(),
+            reference_frames,
             render_tasks,
             deferred_resolves,
             gpu_cache_updates: Some(gpu_cache_updates),

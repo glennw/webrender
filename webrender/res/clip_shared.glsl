@@ -53,8 +53,8 @@ ClipVertexInfo write_clip_tile_vertex(RectWithSize local_clip_rect,
                                       ClipArea area,
                                       int segment) {
 
-    RectWithSize clipped_local_rect = intersect_rect(local_clip_rect,
-                                                     layer.local_clip_rect);
+    RectWithSize clipped_local_rect = local_clip_rect;// intersect_rect(local_clip_rect,
+                                                     //layer.local_clip_rect);
 
     vec2 outer_p0 = area.screen_origin_target_index.xy;
     vec2 outer_p1 = outer_p0 + area.task_bounds.zw - area.task_bounds.xy;

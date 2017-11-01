@@ -8,11 +8,12 @@ use api::{ScrollLayerState, ScrollLocation, WorldPoint};
 use clip::ClipStore;
 use clip_scroll_node::{ClipScrollNode, NodeType, ScrollingState, StickyFrameInfo};
 use gpu_cache::GpuCache;
+use gpu_types::ReferenceFrame;
 use internal_types::{FastHashMap, FastHashSet};
 use print_tree::{PrintTree, PrintTreePrinter};
 use render_task::ClipChain;
 use resource_cache::ResourceCache;
-use tiling::PackedLayer;
+//use tiling::PackedLayer;
 
 pub type ScrollStates = FastHashMap<ClipId, ScrollingState>;
 
@@ -59,11 +60,12 @@ pub struct ClipScrollTree {
 #[derive(Clone)]
 pub struct TransformUpdateState {
     pub parent_reference_frame_transform: LayerToWorldTransform,
-    pub parent_combined_viewport_rect: LayerRect,
     pub parent_accumulated_scroll_offset: LayerVector2D,
     pub nearest_scrolling_ancestor_offset: LayerVector2D,
     pub nearest_scrolling_ancestor_viewport: LayerRect,
     pub parent_clip_chain: ClipChain,
+
+    // todo(gw): !!!!!!!!!!!!!!!!!!!! remove this too??
     pub combined_outer_clip_bounds: DeviceIntRect,
 
     /// An id for keeping track of the axis-aligned space of this node. This is used in
@@ -329,11 +331,12 @@ impl ClipScrollTree {
         &mut self,
         screen_rect: &DeviceIntRect,
         device_pixel_ratio: f32,
-        packed_layers: &mut Vec<PackedLayer>,
+        //packed_layers: &mut Vec<PackedLayer>,
         clip_store: &mut ClipStore,
         resource_cache: &mut ResourceCache,
         gpu_cache: &mut GpuCache,
         pan: LayerPoint,
+        reference_frames: &mut Vec<ReferenceFrame>,
     ) {
         if self.nodes.is_empty() {
             return;
@@ -348,7 +351,6 @@ impl ClipScrollTree {
                 pan.y,
                 0.0,
             ),
-            parent_combined_viewport_rect: root_viewport,
             parent_accumulated_scroll_offset: LayerVector2D::zero(),
             nearest_scrolling_ancestor_offset: LayerVector2D::zero(),
             nearest_scrolling_ancestor_viewport: LayerRect::zero(),
@@ -362,10 +364,10 @@ impl ClipScrollTree {
             &mut state,
             &screen_rect,
             device_pixel_ratio,
-            packed_layers,
             clip_store,
             resource_cache,
             gpu_cache,
+            reference_frames,
         );
     }
 
@@ -375,10 +377,10 @@ impl ClipScrollTree {
         state: &mut TransformUpdateState,
         screen_rect: &DeviceIntRect,
         device_pixel_ratio: f32,
-        packed_layers: &mut Vec<PackedLayer>,
         clip_store: &mut ClipStore,
         resource_cache: &mut ResourceCache,
         gpu_cache: &mut GpuCache,
+        reference_frames: &mut Vec<ReferenceFrame>,
     ) {
         // TODO(gw): This is an ugly borrow check workaround to clone these.
         //           Restructure this to avoid the clones!
@@ -389,12 +391,14 @@ impl ClipScrollTree {
                 None => return,
             };
 
-            node.update_transform(&mut state);
+            node.update_transform(
+                &mut state,
+                reference_frames
+            );
             node.update_clip_work_item(
                 &mut state,
                 screen_rect,
                 device_pixel_ratio,
-                packed_layers,
                 clip_store,
                 resource_cache,
                 gpu_cache,
@@ -409,10 +413,10 @@ impl ClipScrollTree {
                 &mut state,
                 screen_rect,
                 device_pixel_ratio,
-                packed_layers,
                 clip_store,
                 resource_cache,
                 gpu_cache,
+                reference_frames,
             );
         }
     }
@@ -542,10 +546,6 @@ impl ClipScrollTree {
             node.local_viewport_rect
         ));
         pt.add_item(format!("local_clip_rect: {:?}", node.local_clip_rect));
-        pt.add_item(format!(
-            "combined_local_viewport_rect: {:?}",
-            node.combined_local_viewport_rect
-        ));
         pt.add_item(format!(
             "world_viewport_transform: {:?}",
             node.world_viewport_transform

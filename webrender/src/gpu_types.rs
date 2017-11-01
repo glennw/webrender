@@ -2,21 +2,24 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use api::LayerRect;
+use api::{LayerRect, LayerToWorldTransform, WorldToLayerTransform};
 use gpu_cache::GpuCacheAddress;
 use render_task::RenderTaskAddress;
-use tiling::PackedLayerIndex;
+//use tiling::PackedLayerIndex;
+use util::TransformedRectKind;
 
 // Contains type that must exactly match the same structures declared in GLSL.
 
 #[derive(Debug, Copy, Clone)]
 pub struct PackedLayerAddress(i32);
 
+/*
 impl From<PackedLayerIndex> for PackedLayerAddress {
     fn from(index: PackedLayerIndex) -> PackedLayerAddress {
         PackedLayerAddress(index.0 as i32)
     }
 }
+*/
 
 #[repr(i32)]
 #[derive(Debug, Copy, Clone)]
@@ -57,7 +60,7 @@ pub struct SimplePrimitiveInstance {
     pub specific_prim_address: GpuCacheAddress,
     pub task_address: RenderTaskAddress,
     pub clip_task_address: RenderTaskAddress,
-    pub layer_address: PackedLayerAddress,
+    pub ref_frame_index: ReferenceFrameIndex,
     pub z_sort_index: i32,
 }
 
@@ -66,14 +69,14 @@ impl SimplePrimitiveInstance {
         specific_prim_address: GpuCacheAddress,
         task_address: RenderTaskAddress,
         clip_task_address: RenderTaskAddress,
-        layer_address: PackedLayerAddress,
+        ref_frame_index: ReferenceFrameIndex,
         z_sort_index: i32,
     ) -> SimplePrimitiveInstance {
         SimplePrimitiveInstance {
             specific_prim_address,
             task_address,
             clip_task_address,
-            layer_address,
+            ref_frame_index,
             z_sort_index,
         }
     }
@@ -84,7 +87,7 @@ impl SimplePrimitiveInstance {
                 self.specific_prim_address.as_int(),
                 self.task_address.0 as i32,
                 self.clip_task_address.0 as i32,
-                self.layer_address.0,
+                self.ref_frame_index.0 as i32,
                 self.z_sort_index,
                 data0,
                 data1,
@@ -189,4 +192,18 @@ pub enum BrushImageKind {
     Simple = 0,     // A normal rect
     NinePatch = 1,  // A nine-patch image (stretch inside segments)
     Mirror = 2,     // A top left corner only (mirror across x/y axes)
+}
+
+#[derive(Copy, Debug, Clone)]
+#[repr(C)]
+pub struct ReferenceFrameIndex(pub u32);
+
+#[derive(Debug)]
+#[repr(C)]
+pub struct ReferenceFrame {
+    pub transform: LayerToWorldTransform,
+    pub inv_transform: WorldToLayerTransform,
+    // todo: !!!!!!!!!!!!!!! ideally wouldn't be in here...
+    pub transform_kind: TransformedRectKind,
+    pub padding: [u8; 15],
 }

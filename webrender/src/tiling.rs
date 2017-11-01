@@ -15,7 +15,7 @@ use glyph_rasterizer::GlyphFormat;
 use gpu_cache::{GpuCache, GpuCacheAddress, GpuCacheHandle, GpuCacheUpdateList};
 use gpu_types::{BlurDirection, BlurInstance, BrushInstance, BrushImageKind, ClipMaskInstance};
 use gpu_types::{CompositePrimitiveInstance, PrimitiveInstance, SimplePrimitiveInstance};
-use gpu_types::{BRUSH_FLAG_USES_PICTURE};
+use gpu_types::{BRUSH_FLAG_USES_PICTURE, ReferenceFrame};
 use internal_types::{FastHashMap, SourceTexture};
 use internal_types::BatchTextures;
 use picture::PictureKind;
@@ -398,16 +398,10 @@ impl AlphaRenderItem {
 
                 batch.push(PrimitiveInstance::from(instance));
             }
-            AlphaRenderItem::Primitive(clip_scroll_group_index_opt, prim_index, z) => {
+            AlphaRenderItem::Primitive(ref_frame_index, prim_index, z) => {
                 let prim_metadata = ctx.prim_store.get_metadata(prim_index);
-                let (transform_kind, packed_layer_index) = match clip_scroll_group_index_opt {
-                    Some(group_index) => {
-                        let group = &ctx.clip_scroll_group_store[group_index.0];
-                        let bounding_rect = group.screen_bounding_rect.as_ref().unwrap();
-                        (bounding_rect.0, group.packed_layer_index)
-                    }
-                    None => (TransformedRectKind::AxisAligned, PackedLayerIndex(0)),
-                };
+                let ref_frame = &ctx.reference_frames[ref_frame_index.0 as usize];
+                let transform_kind = ref_frame.transform_kind;
                 let item_bounding_rect = prim_metadata.screen_rect.as_ref().unwrap();
                 let prim_cache_address = gpu_cache.get_address(&prim_metadata.gpu_location);
                 let no_textures = BatchTextures::no_texture();
@@ -418,7 +412,7 @@ impl AlphaRenderItem {
                     prim_cache_address,
                     task_address,
                     clip_task_address,
-                    packed_layer_index.into(),
+                    ref_frame_index,
                     z,
                 );
 
@@ -623,6 +617,8 @@ impl AlphaRenderItem {
                                 }
                             }
                         };
+                        panic!("todo");
+                        /*
                         let instance = BrushInstance {
                             picture_address: task_address,
                             prim_address: prim_cache_address,
@@ -634,6 +630,7 @@ impl AlphaRenderItem {
                             user_data1: image_kind as i32,
                         };
                         batch.push(PrimitiveInstance::from(instance));
+                        */
                     }
                     PrimitiveKind::AlignedGradient => {
                         let gradient_cpu =
@@ -855,6 +852,8 @@ impl ClipBatcher {
         geometry_kind: MaskGeometryKind,
         clip_store: &ClipStore,
     ) {
+        panic!("todo");
+        /*
         let mut coordinate_system_id = coordinate_system_id;
         for work_item in clips.iter() {
             let instance = ClipMaskInstance {
@@ -944,16 +943,16 @@ impl ClipBatcher {
                     }
                 }
             }
-        }
+        }*/
     }
 }
 
 pub struct RenderTargetContext<'a> {
     pub device_pixel_ratio: f32,
     pub stacking_context_store: &'a [StackingContext],
-    pub clip_scroll_group_store: &'a [ClipScrollGroup],
     pub prim_store: &'a PrimitiveStore,
     pub resource_cache: &'a ResourceCache,
+    pub reference_frames: &'a [ReferenceFrame],
 }
 
 struct TextureAllocator {
@@ -1214,6 +1213,8 @@ impl RenderTarget for ColorRenderTarget {
 
                         for run in &prim.prim_runs {
                             for i in 0 .. run.count {
+                                panic!("todo");
+                                /*
                                 let sub_prim_index = PrimitiveIndex(run.prim_index.0 + i);
 
                                 let sub_metadata = ctx.prim_store.get_metadata(sub_prim_index);
@@ -1265,7 +1266,7 @@ impl RenderTarget for ColorRenderTarget {
                                     _ => {
                                         unreachable!("Unexpected sub primitive type");
                                     }
-                                }
+                                }*/
                             }
                         }
                     }
@@ -1380,6 +1381,8 @@ impl RenderTarget for AlphaRenderTarget {
                                 let sub_prim_address =
                                     gpu_cache.get_address(&sub_metadata.gpu_location);
 
+                                panic!("todo");
+                                /*
                                 match sub_metadata.prim_kind {
                                     PrimitiveKind::Brush => {
                                         let instance = BrushInstance {
@@ -1411,7 +1414,7 @@ impl RenderTarget for AlphaRenderTarget {
                                     _ => {
                                         unreachable!("Unexpected sub primitive type");
                                     }
-                                }
+                                }*/
                             }
                         }
                     }
@@ -1695,8 +1698,10 @@ impl OpaquePrimitiveBatch {
     }
 }
 
+/*
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct PackedLayerIndex(pub usize);
+*/
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct StackingContextIndex(pub usize);
@@ -1803,6 +1808,7 @@ impl StackingContext {
     }
 }
 
+/*
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct ClipScrollGroupIndex(pub usize, pub ClipAndScrollInfo);
 
@@ -1820,7 +1826,9 @@ impl ClipScrollGroup {
         self.screen_bounding_rect.is_some()
     }
 }
+*/
 
+/*
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct PackedLayer {
@@ -1869,6 +1877,7 @@ impl PackedLayer {
             .map(|rect| (xf_rect.kind, rect))
     }
 }
+*/
 
 #[derive(Debug, Clone, Default)]
 pub struct CompositeOps {
@@ -1910,8 +1919,7 @@ pub struct Frame {
     pub passes: Vec<RenderPass>,
     pub profile_counters: FrameProfileCounters,
 
-    pub layer_texture_data: Vec<PackedLayer>,
-
+    pub reference_frames: Vec<ReferenceFrame>,
     pub render_tasks: RenderTaskTree,
 
     // List of updates that need to be pushed to the

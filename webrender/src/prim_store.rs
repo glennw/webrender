@@ -12,6 +12,7 @@ use clip::{ClipSourcesHandle, ClipStore, Geometry};
 use frame_builder::PrimitiveContext;
 use gpu_cache::{GpuBlockData, GpuCache, GpuCacheAddress, GpuCacheHandle, GpuDataRequest,
                 ToGpuBlocks};
+use gpu_types::ReferenceFrame;
 use picture::PicturePrimitive;
 use render_task::{ClipWorkItem, ClipChainNode, RenderTask, RenderTaskId, RenderTaskTree};
 use renderer::MAX_VERTEX_TEXTURE_WIDTH;
@@ -1207,6 +1208,8 @@ impl PrimitiveStore {
         render_tasks: &mut RenderTaskTree,
         clip_store: &mut ClipStore,
     ) -> bool {
+        // todo:!!!!!!!!!!!!!!!!!!! update clip task
+        /*
         let metadata = &mut self.cpu_metadata[prim_index.0];
         clip_store.get_mut(&metadata.clip_sources).update(
             &prim_context.packed_layer.transform,
@@ -1260,6 +1263,8 @@ impl PrimitiveStore {
         };
 
         metadata.clip_task_id = clip_task.map(|clip_task| render_tasks.add(clip_task));
+        */
+
         true
     }
 
@@ -1271,6 +1276,7 @@ impl PrimitiveStore {
         gpu_cache: &mut GpuCache,
         render_tasks: &mut RenderTaskTree,
         clip_store: &mut ClipStore,
+        reference_frames: &[ReferenceFrame],
     ) -> Option<Geometry> {
         let (geometry, dependent_primitives) = {
             let metadata = &mut self.cpu_metadata[prim_index.0];
@@ -1282,30 +1288,35 @@ impl PrimitiveStore {
                 return None;
             }
 
+/*
             if !metadata.is_backface_visible &&
                prim_context.packed_layer.transform.is_backface_visible() {
                 return None;
             }
+*/
 
             let local_rect = metadata
                 .local_rect
-                .intersection(&metadata.local_clip_rect)
-                .and_then(|rect| rect.intersection(&prim_context.packed_layer.local_clip_rect));
+                .intersection(&metadata.local_clip_rect);
+                //.and_then(|rect| rect.intersection(&prim_context.packed_layer.local_clip_rect));
 
             let local_rect = match local_rect {
                 Some(local_rect) => local_rect,
                 None => return None,
             };
 
+            let reference_frame = &reference_frames[prim_context.reference_frame_index.0 as usize];
+
             let xf_rect = TransformedRect::new(
                 &local_rect,
-                &prim_context.packed_layer.transform,
+                &reference_frame.transform,
                 prim_context.device_pixel_ratio
             );
 
-            metadata.screen_rect = xf_rect
-                .bounding_rect
-                .intersection(&prim_context.clip_bounds);
+            metadata.screen_rect = Some(xf_rect.bounding_rect);
+                // todo: !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! consider clip chain bounds here!?
+                // todo: !!!!!!!!!!!!!!!!!!!!!! at least screen bounds??
+                //.intersection(&prim_context.clip_bounds);
 
             let geometry = match metadata.screen_rect {
                 Some(device_rect) => Geometry {

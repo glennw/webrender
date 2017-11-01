@@ -11,12 +11,13 @@ use clip_scroll_tree::{CoordinateSystemId, TransformUpdateState};
 use euclid::SideOffsets2D;
 use geometry::ray_intersects_rect;
 use gpu_cache::GpuCache;
+use gpu_types::{ReferenceFrame, ReferenceFrameIndex};
 use render_task::{ClipChain, ClipChainNode, ClipWorkItem};
 use resource_cache::ResourceCache;
 use spring::{DAMPING, STIFFNESS, Spring};
 use std::rc::Rc;
-use tiling::{PackedLayer, PackedLayerIndex};
-use util::{MatrixHelpers, MaxRect};
+//use tiling::{PackedLayer, PackedLayerIndex};
+use util::{MatrixHelpers, MaxRect, TransformedRectKind};
 
 #[cfg(target_os = "macos")]
 const CAN_OVERSCROLL: bool = true;
@@ -29,9 +30,11 @@ pub struct ClipInfo {
     /// The clips for this node.
     pub clip_sources: ClipSourcesHandle,
 
+/*
     /// The packed layer index for this node, which is used to render a clip mask
     /// for it, if necessary.
     pub packed_layer_index: PackedLayerIndex,
+*/
 
     /// Whether or not this clip node automatically creates a mask.
     pub is_masking: bool,
@@ -40,7 +43,6 @@ pub struct ClipInfo {
 impl ClipInfo {
     pub fn new(
         clip_region: ClipRegion,
-        packed_layer_index: PackedLayerIndex,
         clip_store: &mut ClipStore,
     ) -> ClipInfo {
         let clip_sources = ClipSources::from(clip_region);
@@ -48,7 +50,6 @@ impl ClipInfo {
 
         ClipInfo {
             clip_sources: clip_store.insert(clip_sources),
-            packed_layer_index,
             is_masking,
         }
     }
@@ -106,13 +107,6 @@ pub struct ClipScrollNode {
     /// in overscroll cases.
     pub local_clip_rect: LayerRect,
 
-    /// Viewport rectangle clipped against parent layer(s) viewport rectangles.
-    /// This is in the coordinate system of the node origin.
-    /// Precisely, it combines the local clipping rectangles of all the parent
-    /// nodes on the way to the root, including those of `ClipRegion` rectangles.
-    /// The combined clip is lossy/concervative on `ReferenceFrame` nodes.
-    pub combined_local_viewport_rect: LayerRect,
-
     /// World transform for the viewport rect itself. This is the parent
     /// reference frame transformation plus the scrolling offsets provided by
     /// the nodes in between the reference frame and this node.
@@ -148,6 +142,9 @@ pub struct ClipScrollNode {
 
     /// The axis-aligned coordinate system id of this node.
     pub coordinate_system_id: CoordinateSystemId,
+
+
+    pub reference_frame_index: ReferenceFrameIndex,
 }
 
 impl ClipScrollNode {
@@ -160,7 +157,6 @@ impl ClipScrollNode {
         ClipScrollNode {
             local_viewport_rect: *rect,
             local_clip_rect: *rect,
-            combined_local_viewport_rect: LayerRect::zero(),
             world_viewport_transform: LayerToWorldTransform::identity(),
             world_content_transform: LayerToWorldTransform::identity(),
             reference_frame_relative_scroll_offset: LayerVector2D::zero(),
@@ -171,6 +167,7 @@ impl ClipScrollNode {
             clip_chain_node: None,
             combined_clip_outer_bounds: DeviceIntRect::max_rect(),
             coordinate_system_id: CoordinateSystemId(0),
+            reference_frame_index: ReferenceFrameIndex(0),
         }
     }
 
@@ -289,7 +286,7 @@ impl ClipScrollNode {
         state: &mut TransformUpdateState,
         screen_rect: &DeviceIntRect,
         device_pixel_ratio: f32,
-        packed_layers: &mut Vec<PackedLayer>,
+        //packed_layers: &mut Vec<PackedLayer>,
         clip_store: &mut ClipStore,
         resource_cache: &mut ResourceCache,
         gpu_cache: &mut GpuCache,
@@ -312,6 +309,7 @@ impl ClipScrollNode {
         let transform = self.world_viewport_transform
             .pre_translate(self.local_viewport_rect.origin.to_vector().to_3d());
 
+/*
         let packed_layer = &mut packed_layers[clip_info.packed_layer_index.0];
         if packed_layer.set_transform(transform) {
             // Meanwhile, the combined viewport rect is relative to the reference frame, so
@@ -325,6 +323,7 @@ impl ClipScrollNode {
                 device_pixel_ratio,
             );
         }
+*/
 
         let clip_sources = clip_store.get_mut(&clip_info.clip_sources);
         clip_sources.update(
@@ -345,7 +344,7 @@ impl ClipScrollNode {
         // TODO: Combine rectangles in the same axis-aligned clip space here?
         self.clip_chain_node = Some(Rc::new(ClipChainNode {
             work_item: ClipWorkItem {
-                layer_index: clip_info.packed_layer_index,
+                //layer_index: clip_info.packed_layer_index,
                 clip_sources: clip_info.clip_sources.weak(),
                 coordinate_system_id: state.current_coordinate_system_id,
             },
@@ -356,7 +355,11 @@ impl ClipScrollNode {
         state.parent_clip_chain = self.clip_chain_node.clone();
     }
 
-    pub fn update_transform(&mut self, state: &mut TransformUpdateState) {
+    pub fn update_transform(
+        &mut self,
+        state: &mut TransformUpdateState,
+        reference_frames: &mut Vec<ReferenceFrame>,
+    ) {
         // We calculate this here to avoid a double-borrow later.
         let sticky_offset = self.calculate_sticky_offset(
             &state.nearest_scrolling_ancestor_offset,
@@ -365,19 +368,10 @@ impl ClipScrollNode {
 
         let (local_transform, accumulated_scroll_offset) = match self.node_type {
             NodeType::ReferenceFrame(ref info) => {
-                self.combined_local_viewport_rect = info.transform
-                    .with_destination::<LayerPixel>()
-                    .inverse_rect_footprint(&state.parent_combined_viewport_rect);
                 self.reference_frame_relative_scroll_offset = LayerVector2D::zero();
                 (info.transform, state.parent_accumulated_scroll_offset)
             }
             NodeType::Clip(_) | NodeType::ScrollFrame(_) => {
-                // Move the parent's viewport into the local space (of the node origin)
-                // and intersect with the local clip rectangle to get the local viewport.
-                self.combined_local_viewport_rect =
-                    state.parent_combined_viewport_rect
-                    .intersection(&self.local_clip_rect)
-                    .unwrap_or(LayerRect::zero());
                 self.reference_frame_relative_scroll_offset =
                     state.parent_accumulated_scroll_offset;
                 (
@@ -387,11 +381,6 @@ impl ClipScrollNode {
             }
             NodeType::StickyFrame(ref mut info) => {
                 info.current_offset = sticky_offset;
-                self.combined_local_viewport_rect =
-                    state.parent_combined_viewport_rect
-                    .translate(&-sticky_offset)
-                    .intersection(&self.local_clip_rect)
-                    .unwrap_or(LayerRect::zero());
                 self.reference_frame_relative_scroll_offset =
                     state.parent_accumulated_scroll_offset + sticky_offset;
                 (LayerToScrollTransform::identity(), self.reference_frame_relative_scroll_offset)
@@ -414,6 +403,21 @@ impl ClipScrollNode {
         self.world_content_transform = self.world_viewport_transform
             .pre_translate(scroll_offset.to_3d());
 
+        self.reference_frame_index = ReferenceFrameIndex(reference_frames.len() as u32);
+
+        let transform_kind = if self.world_content_transform.preserves_2d_axis_alignment() {
+            TransformedRectKind::AxisAligned
+        } else {
+            TransformedRectKind::Complex
+        };
+
+        reference_frames.push(ReferenceFrame {
+            transform: self.world_content_transform,
+            inv_transform: self.world_content_transform.inverse().expect("bug: invalid transform. todo!!!"),
+            transform_kind,
+            padding: [0; 15],
+        });
+
         // The transformation we are passing is the transformation of the parent
         // reference frame and the offset is the accumulated offset of all the nodes
         // between us and the parent reference frame. If we are a reference frame,
@@ -421,7 +425,6 @@ impl ClipScrollNode {
         match self.node_type {
             NodeType::ReferenceFrame(ref info) => {
                 state.parent_reference_frame_transform = self.world_viewport_transform;
-                state.parent_combined_viewport_rect = self.combined_local_viewport_rect;
                 state.parent_accumulated_scroll_offset = LayerVector2D::zero();
                 state.nearest_scrolling_ancestor_viewport =
                     state.nearest_scrolling_ancestor_viewport
@@ -433,11 +436,8 @@ impl ClipScrollNode {
                 }
             },
             NodeType::Clip(..) => {
-                state.parent_combined_viewport_rect = self.combined_local_viewport_rect;
             },
             NodeType::ScrollFrame(ref scrolling) => {
-                state.parent_combined_viewport_rect =
-                        self.combined_local_viewport_rect.translate(&-scrolling.offset);
                 state.parent_accumulated_scroll_offset =
                     scrolling.offset + state.parent_accumulated_scroll_offset;
                 state.nearest_scrolling_ancestor_offset = scrolling.offset;
@@ -447,7 +447,6 @@ impl ClipScrollNode {
                 // We don't translate the combined rect by the sticky offset, because sticky
                 // offsets actually adjust the node position itself, whereas scroll offsets
                 // only apply to contents inside the node.
-                state.parent_combined_viewport_rect = self.combined_local_viewport_rect;
                 state.parent_accumulated_scroll_offset =
                     info.current_offset + state.parent_accumulated_scroll_offset;
             }

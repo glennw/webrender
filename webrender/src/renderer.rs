@@ -252,7 +252,7 @@ enum TextureSampler {
     CacheA8,
     CacheRGBA8,
     ResourceCache,
-    Layers,
+    ReferenceFrames,
     RenderTasks,
     Dither,
     // A special sampler that is bound to the A8 output of
@@ -283,7 +283,7 @@ impl Into<TextureSlot> for TextureSampler {
             TextureSampler::CacheA8 => TextureSlot(3),
             TextureSampler::CacheRGBA8 => TextureSlot(4),
             TextureSampler::ResourceCache => TextureSlot(5),
-            TextureSampler::Layers => TextureSlot(6),
+            TextureSampler::ReferenceFrames => TextureSlot(6),
             TextureSampler::RenderTasks => TextureSlot(7),
             TextureSampler::Dither => TextureSlot(8),
             TextureSampler::SharedCacheA8 => TextureSlot(9),
@@ -1121,7 +1121,7 @@ fn create_prim_shader(
                 ("sDither", TextureSampler::Dither),
                 ("sCacheA8", TextureSampler::CacheA8),
                 ("sCacheRGBA8", TextureSampler::CacheRGBA8),
-                ("sLayers", TextureSampler::Layers),
+                ("sReferenceFrames", TextureSampler::ReferenceFrames),
                 ("sRenderTasks", TextureSampler::RenderTasks),
                 ("sResourceCache", TextureSampler::ResourceCache),
                 ("sSharedCacheA8", TextureSampler::SharedCacheA8),
@@ -1148,7 +1148,7 @@ fn create_clip_shader(name: &'static str, device: &mut Device) -> Result<Program
             program,
             &[
                 ("sColor0", TextureSampler::Color0),
-                ("sLayers", TextureSampler::Layers),
+                ("sReferenceFrames", TextureSampler::ReferenceFrames),
                 ("sRenderTasks", TextureSampler::RenderTasks),
                 ("sResourceCache", TextureSampler::ResourceCache),
                 ("sSharedCacheA8", TextureSampler::SharedCacheA8),
@@ -1248,7 +1248,7 @@ pub struct Renderer {
     blur_vao: VAO,
     clip_vao: VAO,
 
-    layer_texture: VertexDataTexture,
+    ref_frame_texture: VertexDataTexture,
     render_task_texture: VertexDataTexture,
     gpu_cache_texture: CacheTexture,
 
@@ -1747,7 +1747,7 @@ impl Renderer {
 
         let texture_resolver = SourceTextureResolver::new(&mut device);
 
-        let layer_texture = VertexDataTexture::new(&mut device);
+        let ref_frame_texture = VertexDataTexture::new(&mut device);
         let render_task_texture = VertexDataTexture::new(&mut device);
 
         device.end_frame();
@@ -1854,7 +1854,7 @@ impl Renderer {
             prim_vao,
             blur_vao,
             clip_vao,
-            layer_texture,
+            ref_frame_texture,
             render_task_texture,
             pipeline_epoch_map: FastHashMap::default(),
             dither_matrix_texture,
@@ -3289,13 +3289,13 @@ impl Renderer {
             }
         }
 
-        self.layer_texture
-            .update(&mut self.device, &mut frame.layer_texture_data);
+        self.ref_frame_texture
+            .update(&mut self.device, &mut frame.reference_frames);
+        self.device
+            .bind_texture(TextureSampler::ReferenceFrames, &self.ref_frame_texture.texture);
+
         self.render_task_texture
             .update(&mut self.device, &mut frame.render_tasks.task_data);
-
-        self.device
-            .bind_texture(TextureSampler::Layers, &self.layer_texture.texture);
         self.device.bind_texture(
             TextureSampler::RenderTasks,
             &self.render_task_texture.texture,
@@ -3601,7 +3601,7 @@ impl Renderer {
         if let Some(dither_matrix_texture) = self.dither_matrix_texture {
             self.device.delete_texture(dither_matrix_texture);
         }
-        self.layer_texture.deinit(&mut self.device);
+        self.ref_frame_texture.deinit(&mut self.device);
         self.render_task_texture.deinit(&mut self.device);
         for texture in self.alpha_render_targets {
             self.device.delete_texture(texture);

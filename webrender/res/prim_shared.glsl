@@ -78,7 +78,7 @@ vec4[2] fetch_from_resource_cache_2(int address) {
 #define VECS_PER_GRADIENT           3
 #define VECS_PER_GRADIENT_STOP      2
 
-uniform HIGHP_SAMPLER_FLOAT sampler2D sLayers;
+uniform HIGHP_SAMPLER_FLOAT sampler2D sReferenceFrames;
 uniform HIGHP_SAMPLER_FLOAT sampler2D sRenderTasks;
 
 // Instanced attributes
@@ -146,7 +146,7 @@ vec4 fetch_from_resource_cache_1(int address) {
 struct Layer {
     mat4 transform;
     mat4 inv_transform;
-    RectWithSize local_clip_rect;
+    //RectWithSize local_clip_rect;
 };
 
 Layer fetch_layer(int index) {
@@ -160,18 +160,18 @@ Layer fetch_layer(int index) {
     ivec2 uv0 = ivec2(uv.x + 0, uv.y);
     ivec2 uv1 = ivec2(uv.x + 8, uv.y);
 
-    layer.transform[0] = TEXEL_FETCH(sLayers, uv0, 0, ivec2(0, 0));
-    layer.transform[1] = TEXEL_FETCH(sLayers, uv0, 0, ivec2(1, 0));
-    layer.transform[2] = TEXEL_FETCH(sLayers, uv0, 0, ivec2(2, 0));
-    layer.transform[3] = TEXEL_FETCH(sLayers, uv0, 0, ivec2(3, 0));
+    layer.transform[0] = TEXEL_FETCH(sReferenceFrames, uv0, 0, ivec2(0, 0));
+    layer.transform[1] = TEXEL_FETCH(sReferenceFrames, uv0, 0, ivec2(1, 0));
+    layer.transform[2] = TEXEL_FETCH(sReferenceFrames, uv0, 0, ivec2(2, 0));
+    layer.transform[3] = TEXEL_FETCH(sReferenceFrames, uv0, 0, ivec2(3, 0));
 
-    layer.inv_transform[0] = TEXEL_FETCH(sLayers, uv0, 0, ivec2(4, 0));
-    layer.inv_transform[1] = TEXEL_FETCH(sLayers, uv0, 0, ivec2(5, 0));
-    layer.inv_transform[2] = TEXEL_FETCH(sLayers, uv0, 0, ivec2(6, 0));
-    layer.inv_transform[3] = TEXEL_FETCH(sLayers, uv0, 0, ivec2(7, 0));
+    layer.inv_transform[0] = TEXEL_FETCH(sReferenceFrames, uv0, 0, ivec2(4, 0));
+    layer.inv_transform[1] = TEXEL_FETCH(sReferenceFrames, uv0, 0, ivec2(5, 0));
+    layer.inv_transform[2] = TEXEL_FETCH(sReferenceFrames, uv0, 0, ivec2(6, 0));
+    layer.inv_transform[3] = TEXEL_FETCH(sReferenceFrames, uv0, 0, ivec2(7, 0));
 
-    vec4 clip_rect = TEXEL_FETCH(sLayers, uv1, 0, ivec2(0, 0));
-    layer.local_clip_rect = RectWithSize(clip_rect.xy, clip_rect.zw);
+    //vec4 clip_rect = TEXEL_FETCH(sReferenceFrames, uv1, 0, ivec2(0, 0));
+    //layer.local_clip_rect = RectWithSize(clip_rect.xy, clip_rect.zw);
 
     return layer;
 }
@@ -546,8 +546,7 @@ VertexInfo write_vertex(RectWithSize instance_rect,
     vec2 local_pos = instance_rect.p0 + instance_rect.size * aPosition.xy;
 
     // Clamp to the two local clip rects.
-    vec2 clamped_local_pos = clamp_rect(clamp_rect(local_pos, local_clip_rect),
-                                        layer.local_clip_rect);
+    vec2 clamped_local_pos = clamp_rect(local_pos, local_clip_rect);
 
     /// Compute the snapping offset.
     vec2 snap_offset = compute_snap_offset(clamped_local_pos, local_clip_rect, layer, snap_rect);
@@ -606,8 +605,8 @@ TransformVertexInfo write_transform_vertex(RectWithSize instance_rect,
     vec2 current_local_pos, prev_local_pos, next_local_pos;
 
     // Clamp to the two local clip rects.
-    local_rect.p0 = clamp_rect(clamp_rect(local_rect.p0, local_clip_rect), layer.local_clip_rect);
-    local_rect.p1 = clamp_rect(clamp_rect(local_rect.p1, local_clip_rect), layer.local_clip_rect);
+    local_rect.p0 = clamp_rect(local_rect.p0, local_clip_rect);
+    local_rect.p1 = clamp_rect(local_rect.p1, local_clip_rect);
 
     // Select the current vertex and the previous/next vertices,
     // based on the vertex ID that is known based on the instance rect.

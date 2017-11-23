@@ -306,7 +306,6 @@ impl ClipScrollNode {
                     reference_frame_relative_scroll_offset:
                         self.reference_frame_relative_scroll_offset,
                     scroll_offset: self.scroll_offset(),
-                    combined_clip_outer_bounds: self.combined_clip_outer_bounds.to_f32(),
                 }
             }
             None => {

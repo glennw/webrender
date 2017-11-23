@@ -1239,11 +1239,17 @@ impl PrimitiveStore {
         metadata.clip_task_id = None;
         metadata.screen_rect = None;
 
+        let prim_screen_rect = match prim_screen_rect.intersection(screen_rect) {
+            Some(rect) => rect,
+            None => return false,
+        };
+
         let clip_chain = prim_context.clip_node.clip_chain_node.clone();
         let mut combined_outer_rect = match clip_chain {
             Some(ref node) => prim_screen_rect.intersection(&node.combined_outer_screen_rect),
-            None => Some(*prim_screen_rect),
+            None => Some(prim_screen_rect),
         };
+        let initial = combined_outer_rect;
 
         let prim_coordinate_system_id = prim_context.scroll_node.coordinate_system_id;
         let transform = &prim_context.scroll_node.world_content_transform;
@@ -1310,8 +1316,12 @@ impl PrimitiveStore {
            return true;
         }
 
-        if clips.is_empty() && combined_outer_rect == *prim_screen_rect {
+        if clips.is_empty() && combined_outer_rect == prim_screen_rect {
             return true;
+        }
+
+        if clips.is_empty() {
+            println!("{:?} -- {:?}      (initial: {:?})", combined_outer_rect, prim_screen_rect, initial);
         }
 
         let clip_task = RenderTask::new_mask(

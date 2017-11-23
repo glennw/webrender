@@ -341,7 +341,9 @@ impl RenderTask {
         //           a single aligned rect mask with rounded corners.
         //           In the future, we'll expand this to handle the
         //           more complex types of clip mask geometry.
-        let geometry_kind = if is_axis_aligned && clips.len() == 1 {
+        let geometry_kind = if is_axis_aligned &&
+            clips.len() == 1 &&
+            inner_rect.size != DeviceIntSize::zero() {
             clips[0].get_geometry_kind(clip_store, prim_coordinate_system_id)
         } else {
             MaskGeometryKind::Default

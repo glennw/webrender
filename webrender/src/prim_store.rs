@@ -1243,13 +1243,21 @@ impl PrimitiveStore {
     ) -> bool {
         let metadata = &mut self.cpu_metadata[prim_index.0];
         metadata.clip_task_id = None;
-        metadata.screen_rect = None;
+
+        let prim_screen_rect = match prim_screen_rect.intersection(screen_rect) {
+            Some(rect) => rect,
+            None => {
+                metadata.screen_rect = None;
+                return false;
+            }
+        };
 
         let clip_chain = prim_context.clip_node.clip_chain_node.clone();
         let mut combined_outer_rect = match clip_chain {
             Some(ref node) => prim_screen_rect.intersection(&node.combined_outer_screen_rect),
-            None => Some(*prim_screen_rect),
+            None => Some(prim_screen_rect),
         };
+        let initial = combined_outer_rect;
 
         let prim_coordinate_system_id = prim_context.scroll_node.coordinate_system_id;
         let transform = &prim_context.scroll_node.world_content_transform;
@@ -1284,14 +1292,16 @@ impl PrimitiveStore {
         // If everything is clipped out, then we don't need to render this primitive.
         let combined_outer_rect = match combined_outer_rect {
             Some(rect) if !rect.is_empty() => rect,
-            _ => return false,
+            _ => {
+                metadata.screen_rect = None;
+                return false;
+            }
         };
-        metadata.screen_rect = Some(combined_outer_rect);
 
         // Filter out all the clip instances that don't contribute to the result.
         let mut combined_inner_rect = *screen_rect;
-        let clips: Vec<_> = ClipChainNodeIter { current: clip_chain }
-            .chain(ClipChainNodeIter { current: extra_clip })
+        let clips: Vec<_> = ClipChainNodeIter { current: extra_clip }
+            .chain(ClipChainNodeIter { current: clip_chain })
             .take_while(|node| {
                 !node.combined_inner_screen_rect.contains_rect(&combined_outer_rect)
             })
@@ -1312,11 +1322,15 @@ impl PrimitiveStore {
             })
             .collect();
 
+        if clips.is_empty() {
+            combined_inner_rect = DeviceIntRect::zero();
+        }
+
         if combined_inner_rect.contains_rect(&prim_screen_rect) {
            return true;
         }
 
-        if clips.is_empty() {
+        if clips.is_empty() && combined_outer_rect == prim_screen_rect {
             return true;
         }
 
@@ -1429,7 +1443,7 @@ impl PrimitiveStore {
             );
         }
 
-        let (local_rect, device_rect) = {
+        let (local_rect, unclipped_device_rect) = {
             let metadata = &mut self.cpu_metadata[prim_index.0];
             if metadata.local_rect.size.width <= 0.0 ||
                metadata.local_rect.size.height <= 0.0 {
@@ -1451,27 +1465,19 @@ impl PrimitiveStore {
             );
 
             let clip_bounds = &prim_context.clip_node.combined_clip_outer_bounds;
-            metadata.screen_rect = xf_rect.bounding_rect
-                                          .intersection(clip_bounds);
+            metadata.screen_rect = xf_rect.bounding_rect.intersection(clip_bounds);
 
-            let device_rect = match metadata.screen_rect {
-                Some(device_rect) => device_rect,
-                None => {
-                    if perform_culling {
-                        return None
-                    } else {
-                        DeviceIntRect::zero()
-                    }
-                }
-            };
+            if metadata.screen_rect.is_none() && perform_culling {
+                return None;
+            }
 
-            (local_rect, device_rect)
+            (local_rect, xf_rect.bounding_rect)
         };
 
         if !self.update_clip_task(
             prim_index,
             prim_context,
-            &device_rect,
+            &unclipped_device_rect,
             screen_rect,
             resource_cache,
             gpu_cache,

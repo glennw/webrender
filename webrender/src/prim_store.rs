@@ -1237,19 +1237,12 @@ impl PrimitiveStore {
     ) -> bool {
         let metadata = &mut self.cpu_metadata[prim_index.0];
         metadata.clip_task_id = None;
-        metadata.screen_rect = None;
-
-        let prim_screen_rect = match prim_screen_rect.intersection(screen_rect) {
-            Some(rect) => rect,
-            None => return false,
-        };
 
         let clip_chain = prim_context.clip_node.clip_chain_node.clone();
         let mut combined_outer_rect = match clip_chain {
             Some(ref node) => prim_screen_rect.intersection(&node.combined_outer_screen_rect),
-            None => Some(prim_screen_rect),
+            None => Some(*prim_screen_rect),
         };
-        let initial = combined_outer_rect;
 
         let prim_coordinate_system_id = prim_context.scroll_node.coordinate_system_id;
         let transform = &prim_context.scroll_node.world_content_transform;
@@ -1286,7 +1279,6 @@ impl PrimitiveStore {
             Some(rect) if !rect.is_empty() => rect,
             _ => return false,
         };
-        metadata.screen_rect = Some(combined_outer_rect);
 
         // Filter out all the clip instances that don't contribute to the result.
         let mut combined_inner_rect = *screen_rect;
@@ -1312,16 +1304,12 @@ impl PrimitiveStore {
             })
             .collect();
 
-        if combined_inner_rect.contains_rect(&prim_screen_rect) {
+        if combined_inner_rect.contains_rect(prim_screen_rect) {
            return true;
         }
 
-        if clips.is_empty() && combined_outer_rect == prim_screen_rect {
+        if clips.is_empty() && combined_outer_rect == *prim_screen_rect {
             return true;
-        }
-
-        if clips.is_empty() {
-            println!("{:?} -- {:?}      (initial: {:?})", combined_outer_rect, prim_screen_rect, initial);
         }
 
         let clip_task = RenderTask::new_mask(

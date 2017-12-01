@@ -1854,13 +1854,13 @@ impl PrimitiveStore {
                     profile_counters.visible_primitives.inc();
 
                     if let Some(ref matrix) = original_relative_transform {
-                        let bounds = get_local_bounding_rect(&prim_local_rect, matrix);
+                        let bounds = matrix.transform_rect(&prim_local_rect);
                         result.local_rect_in_original_parent_space =
                             result.local_rect_in_original_parent_space.union(&bounds);
                     }
 
                     if let Some(ref matrix) = parent_relative_transform {
-                        let bounds = get_local_bounding_rect(&prim_local_rect, matrix);
+                        let bounds = matrix.transform_rect(&prim_local_rect);
                         result.local_rect_in_actual_parent_space =
                             result.local_rect_in_actual_parent_space.union(&bounds);
                     }

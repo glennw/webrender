@@ -28,6 +28,8 @@ use std::{mem, u16, usize};
 use std::rc::Rc;
 use util::{extract_inner_rect_safe, pack_as_float, recycle_vec};
 use util::{MatrixHelpers, TransformedRect};
+use util::{MatrixHelpers, TransformedRectKind, calculate_screen_bounding_rect, pack_as_float};
+use util::recycle_vec;
 
 const MIN_BRUSH_SPLIT_AREA: f32 = 128.0 * 128.0;
 
@@ -1710,20 +1712,20 @@ impl PrimitiveStore {
                 None => LayerRect::zero(),
             };
 
-            let xf_rect = TransformedRect::new(
-                &local_rect,
+            let screen_bounding_rect = calculate_screen_bounding_rect(
                 &prim_context.scroll_node.world_content_transform,
+                &local_rect,
                 prim_context.device_pixel_ratio
             );
 
             let clip_bounds = &prim_context.clip_node.combined_clip_outer_bounds;
-            metadata.screen_rect = xf_rect.bounding_rect.intersection(clip_bounds);
+            metadata.screen_rect = screen_bounding_rect.intersection(clip_bounds);
 
             if metadata.screen_rect.is_none() && perform_culling {
                 return None;
             }
 
-            (local_rect, xf_rect.bounding_rect)
+            (local_rect, screen_bounding_rect)
         };
 
         if perform_culling && may_need_clip_mask && !self.update_clip_task(

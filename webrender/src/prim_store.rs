@@ -7,7 +7,7 @@ use api::{DevicePoint, ExtendMode, FontRenderMode, GlyphInstance, GlyphKey};
 use api::{GradientStop, ImageKey, ImageRendering, ItemRange, ItemTag, LayerPoint, LayerRect};
 use api::{ClipMode, LayerSize, LayerVector2D, LayerToWorldTransform, LineOrientation, LineStyle};
 use api::{ClipAndScrollInfo, PremultipliedColorF, TileOffset, WorldToLayerTransform};
-use api::{ClipId, LayerTransform, PipelineId, YuvColorSpace, YuvFormat};
+use api::{ClipId, PipelineId, YuvColorSpace, YuvFormat};
 use border::BorderCornerInstance;
 use clip_scroll_tree::{CoordinateSystemId, ClipScrollTree};
 use clip::{ClipSource, ClipSourcesHandle, ClipStore};
@@ -27,9 +27,7 @@ use scene::{ScenePipeline, SceneProperties};
 use std::{mem, u16, usize};
 use std::rc::Rc;
 use util::{extract_inner_rect_safe, pack_as_float, recycle_vec};
-use util::{MatrixHelpers, TransformedRect};
-use util::{MatrixHelpers, TransformedRectKind, calculate_screen_bounding_rect, pack_as_float};
-use util::recycle_vec;
+use util::{MatrixHelpers, calculate_screen_bounding_rect};
 
 const MIN_BRUSH_SPLIT_AREA: f32 = 128.0 * 128.0;
 
@@ -1555,13 +1553,13 @@ impl PrimitiveStore {
                     let create_clip_task = segment_enabled &&
                                            (!can_optimize_clip_mask || i <= BrushSegmentKind::BottomLeft as usize);
                     segment.clip_task_id = if create_clip_task {
-                        let segment_rect = TransformedRect::new(
-                            &segment.local_rect,
+                        let segment_rect = calculate_screen_bounding_rect(
                             &prim_context.scroll_node.world_content_transform,
+                            &segment.local_rect,
                             prim_context.device_pixel_ratio
                         );
 
-                        combined_outer_rect.intersection(&segment_rect.bounding_rect).map(|bounds| {
+                        combined_outer_rect.intersection(&segment_rect).map(|bounds| {
                             let clip_task = RenderTask::new_mask(
                                 None,
                                 bounds,
@@ -1897,32 +1895,6 @@ impl InsideTest<ComplexClipRegion> for ComplexClipRegion {
             clip.radii.bottom_right.width >= self.radii.bottom_right.width - delta_right &&
             clip.radii.bottom_right.height >= self.radii.bottom_right.height - delta_bottom
     }
-}
-
-fn get_local_bounding_rect(
-    local_rect: &LayerRect,
-    matrix: &LayerTransform
-) -> LayerRect {
-    let vertices = [
-        matrix.transform_point3d(&local_rect.origin.to_3d()),
-        matrix.transform_point3d(&local_rect.bottom_left().to_3d()),
-        matrix.transform_point3d(&local_rect.bottom_right().to_3d()),
-        matrix.transform_point3d(&local_rect.top_right().to_3d()),
-    ];
-
-    let mut x0 = vertices[0].x;
-    let mut y0 = vertices[0].y;
-    let mut x1 = vertices[0].x;
-    let mut y1 = vertices[0].y;
-
-    for v in &vertices[1..] {
-        x0 = x0.min(v.x);
-        y0 = y0.min(v.y);
-        x1 = x1.max(v.x);
-        y1 = y1.max(v.y);
-    }
-
-    LayerRect::new(LayerPoint::new(x0, y0), LayerSize::new(x1 - x0, y1 - y0))
 }
 
 fn create_nine_patch(

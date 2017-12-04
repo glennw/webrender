@@ -4,7 +4,7 @@
 
 use api::{BorderRadius, ComplexClipRegion, DeviceIntPoint, DeviceIntRect, DeviceIntSize};
 use api::{DevicePoint, DeviceRect, DeviceSize, LayerPoint, LayerRect, LayerSize};
-use api::{LayerToWorldTransform, LayoutPoint, LayoutRect, LayoutSize, WorldRect};
+use api::{LayerToWorldTransform, LayoutRect, WorldRect};
 use euclid::{Point2D, Rect, Size2D, TypedPoint2D, TypedRect, TypedSize2D, TypedTransform2D};
 use euclid::TypedTransform3D;
 use num_traits::Zero;

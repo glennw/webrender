@@ -390,15 +390,20 @@ impl BatchList {
 pub struct AlphaBatcher {
     pub batch_list: BatchList,
     pub text_run_cache_prims: FastHashMap<SourceTexture, Vec<PrimitiveInstance>>,
+    pub target_rect: DeviceIntRect,
     glyph_fetch_buffer: Vec<GlyphFetchResult>,
 }
 
 impl AlphaBatcher {
-    pub fn new(screen_size: DeviceIntSize) -> Self {
+    pub fn new(
+        screen_size: DeviceIntSize,
+        target_rect: DeviceIntRect,
+    ) -> Self {
         AlphaBatcher {
             batch_list: BatchList::new(screen_size),
             glyph_fetch_buffer: Vec::new(),
             text_run_cache_prims: FastHashMap::default(),
+            target_rect,
         }
     }
 
@@ -431,11 +436,6 @@ impl AlphaBatcher {
         }
 
         self.batch_list.finalize();
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.batch_list.opaque_batch_list.batches.is_empty() &&
-            self.batch_list.alpha_batch_list.batches.is_empty()
     }
 
     fn add_pic_to_batch(

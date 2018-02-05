@@ -269,7 +269,7 @@ pub struct BlitJob {
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct ColorRenderTarget {
-    pub alpha_batcher: AlphaBatcher,
+    pub alpha_batchers: Vec<AlphaBatcher>,
     // List of blur operations to apply for this render target.
     pub vertical_blurs: Vec<BlurInstance>,
     pub horizontal_blurs: Vec<BlurInstance>,
@@ -280,6 +280,7 @@ pub struct ColorRenderTarget {
     pub outputs: Vec<FrameOutput>,
     allocator: Option<TextureAllocator>,
     alpha_tasks: Vec<RenderTaskId>,
+    screen_size: DeviceIntSize,
 }
 
 impl RenderTarget for ColorRenderTarget {
@@ -295,7 +296,7 @@ impl RenderTarget for ColorRenderTarget {
         screen_size: DeviceIntSize,
     ) -> Self {
         ColorRenderTarget {
-            alpha_batcher: AlphaBatcher::new(screen_size),
+            alpha_batchers: Vec::new(),
             vertical_blurs: Vec::new(),
             horizontal_blurs: Vec::new(),
             readbacks: Vec::new(),
@@ -304,6 +305,7 @@ impl RenderTarget for ColorRenderTarget {
             allocator: size.map(TextureAllocator::new),
             outputs: Vec::new(),
             alpha_tasks: Vec::new(),
+            screen_size,
         }
     }
 
@@ -314,13 +316,28 @@ impl RenderTarget for ColorRenderTarget {
         render_tasks: &mut RenderTaskTree,
         deferred_resolves: &mut Vec<DeferredResolve>,
     ) {
-        self.alpha_batcher.build(
-            &self.alpha_tasks,
-            ctx,
-            gpu_cache,
-            render_tasks,
-            deferred_resolves,
-        );
+        for task_id in &self.alpha_tasks {
+            let (mut target_rect, _) = render_tasks[*task_id].get_target_rect();
+
+            if target_rect.size == DeviceIntSize::zero() {
+                target_rect.size = self.screen_size;
+            }
+
+            let mut batcher = AlphaBatcher::new(
+                self.screen_size,
+                target_rect,
+            );
+
+            batcher.build(
+                &[*task_id],
+                ctx,
+                gpu_cache,
+                render_tasks,
+                deferred_resolves,
+            );
+
+            self.alpha_batchers.push(batcher);
+        }
     }
 
     fn add_task(
@@ -446,7 +463,9 @@ impl RenderTarget for ColorRenderTarget {
     }
 
     fn needs_depth(&self) -> bool {
-        !self.alpha_batcher.batch_list.opaque_batch_list.batches.is_empty()
+        self.alpha_batchers.iter().any(|ab| {
+            !ab.batch_list.opaque_batch_list.batches.is_empty()
+        })
     }
 }
 

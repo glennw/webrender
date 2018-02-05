@@ -2567,35 +2567,39 @@ impl Renderer {
             "Horizontal Blur",
             target.horizontal_blurs.len(),
         );
-        for (_, batch) in &target.alpha_batcher.text_run_cache_prims {
-            debug_target.add(
-                debug_server::BatchKind::Cache,
-                "Text Shadow",
-                batch.len(),
-            );
-        }
 
-        for batch in target
-            .alpha_batcher
-            .batch_list
-            .opaque_batch_list
-            .batches
-            .iter()
-            .rev()
-        {
-            debug_target.add(
-                debug_server::BatchKind::Opaque,
-                batch.key.kind.debug_name(),
-                batch.instances.len(),
-            );
-        }
+        for alpha_batcher in &target.alpha_batchers {
+            for (_, batch) in &alpha_batcher.text_run_cache_prims {
+                debug_target.add(
+                    debug_server::BatchKind::Cache,
+                    "Text Shadow",
+                    batch.len(),
+                );
+            }
 
-        for batch in &target.alpha_batcher.batch_list.alpha_batch_list.batches {
-            debug_target.add(
-                debug_server::BatchKind::Alpha,
-                batch.key.kind.debug_name(),
-                batch.instances.len(),
-            );
+            for batch in alpha_batcher
+                .batch_list
+                .opaque_batch_list
+                .batches
+                .iter()
+                .rev() {
+                debug_target.add(
+                    debug_server::BatchKind::Opaque,
+                    batch.key.kind.debug_name(),
+                    batch.instances.len(),
+                );
+            }
+
+            for batch in &alpha_batcher
+                .batch_list
+                .alpha_batch_list
+                .batches {
+                debug_target.add(
+                    debug_server::BatchKind::Alpha,
+                    batch.key.kind.debug_name(),
+                    batch.instances.len(),
+                );
+            }
         }
 
         debug_target
@@ -3548,42 +3552,43 @@ impl Renderer {
         // considering using this for (some) other text runs, since
         // it removes the overhead of submitting many small glyphs
         // to multiple tiles in the normal text run case.
-        if !target.alpha_batcher.text_run_cache_prims.is_empty() {
-            self.device.set_blend(true);
-            self.device.set_blend_mode_premultiplied_alpha();
+        for alpha_batcher in &target.alpha_batchers {
+            if !alpha_batcher.text_run_cache_prims.is_empty() {
+                self.device.set_blend(true);
+                self.device.set_blend_mode_premultiplied_alpha();
 
-            let _timer = self.gpu_profile.start_timer(GPU_TAG_CACHE_TEXT_RUN);
-            self.cs_text_run
-                .bind(&mut self.device, projection, 0, &mut self.renderer_errors);
-            for (texture_id, instances) in &target.alpha_batcher.text_run_cache_prims {
-                self.draw_instanced_batch(
-                    instances,
-                    VertexArrayKind::Primitive,
-                    &BatchTextures::color(*texture_id),
-                    stats,
-                );
+                let _timer = self.gpu_profile.start_timer(GPU_TAG_CACHE_TEXT_RUN);
+                self.cs_text_run
+                    .bind(&mut self.device, projection, 0, &mut self.renderer_errors);
+                for (texture_id, instances) in &alpha_batcher.text_run_cache_prims {
+                    self.draw_instanced_batch(
+                        instances,
+                        VertexArrayKind::Primitive,
+                        &BatchTextures::color(*texture_id),
+                        stats,
+                    );
+                }
             }
         }
 
         //TODO: record the pixel count for cached primitives
+        self.device.enable_scissor();
 
-        if !target.alpha_batcher.is_empty() {
-            let _gl = self.gpu_profile.start_marker("alpha batches");
+        if target.needs_depth() {
+            let _gl = self.gpu_profile.start_marker("opaque batches");
+            let opaque_sampler = self.gpu_profile.start_sampler(GPU_SAMPLER_TAG_OPAQUE);
             self.device.set_blend(false);
-            let mut prev_blend_mode = BlendMode::None;
+            //Note: depth equality is needed for split planes
+            self.device.set_depth_func(DepthFunction::LessEqual);
+            self.device.enable_depth();
+            self.device.enable_depth_write();
 
-            if target.needs_depth() {
-                let opaque_sampler = self.gpu_profile.start_sampler(GPU_SAMPLER_TAG_OPAQUE);
-
-                //Note: depth equality is needed for split planes
-                self.device.set_depth_func(DepthFunction::LessEqual);
-                self.device.enable_depth();
-                self.device.enable_depth_write();
+            for alpha_batcher in &target.alpha_batchers {
+                self.device.set_scissor_rect(alpha_batcher.target_rect);
 
                 // Draw opaque batches front-to-back for maximum
                 // z-buffer efficiency!
-                for batch in target
-                    .alpha_batcher
+                for batch in alpha_batcher
                     .batch_list
                     .opaque_batch_list
                     .batches
@@ -3600,14 +3605,21 @@ impl Renderer {
                         stats,
                     );
                 }
-
-                self.device.disable_depth_write();
-                self.gpu_profile.finish_sampler(opaque_sampler);
             }
 
-            let transparent_sampler = self.gpu_profile.start_sampler(GPU_SAMPLER_TAG_TRANSPARENT);
+            self.device.disable_depth_write();
+            self.gpu_profile.finish_sampler(opaque_sampler);
+        }
 
-            for batch in &target.alpha_batcher.batch_list.alpha_batch_list.batches {
+        let _gl = self.gpu_profile.start_marker("alpha batches");
+        let transparent_sampler = self.gpu_profile.start_sampler(GPU_SAMPLER_TAG_TRANSPARENT);
+        self.device.set_blend(false);
+        let mut prev_blend_mode = BlendMode::None;
+
+        for alpha_batcher in &target.alpha_batchers {
+            self.device.set_scissor_rect(alpha_batcher.target_rect);
+
+            for batch in &alpha_batcher.batch_list.alpha_batch_list.batches {
                 if self.debug_flags.contains(DebugFlags::ALPHA_PRIM_DBG) {
                     let color = match batch.key.blend_mode {
                         BlendMode::None => debug_colors::BLACK,
@@ -3841,11 +3853,12 @@ impl Renderer {
                     }
                 }
             }
-
-            self.device.disable_depth();
-            self.device.set_blend(false);
-            self.gpu_profile.finish_sampler(transparent_sampler);
         }
+
+        self.device.disable_scissor();
+        self.device.disable_depth();
+        self.device.set_blend(false);
+        self.gpu_profile.finish_sampler(transparent_sampler);
 
         // For any registered image outputs on this render target,
         // get the texture from caller and blit it.

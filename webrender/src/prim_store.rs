@@ -134,7 +134,6 @@ pub struct PrimitiveIndex(pub usize);
 pub enum PrimitiveKind {
     TextRun,
     Image,
-    Border,
     Picture,
     Brush,
 }
@@ -237,6 +236,11 @@ pub enum BrushKind {
         reverse_stops: bool,
         start_point: LayerPoint,
         end_point: LayerPoint,
+    },
+    Border {
+        corner_instances: [BorderCornerInstance; 4],
+        edges: [BorderEdgeKind; 4],
+        gpu_blocks: [GpuBlockData; 8],
     }
 }
 
@@ -248,7 +252,8 @@ impl BrushKind {
             BrushKind::Image { .. } |
             BrushKind::YuvImage { .. } |
             BrushKind::RadialGradient { .. } |
-            BrushKind::LinearGradient { .. } => true,
+            BrushKind::LinearGradient { .. } |
+            BrushKind::Border { .. } => true,
 
             BrushKind::Mask { .. } |
             BrushKind::Clear |
@@ -332,6 +337,9 @@ impl BrushPrimitive {
             BrushKind::Picture |
             BrushKind::Image { .. } |
             BrushKind::YuvImage { .. } => {
+            }
+            BrushKind::Border { ref gpu_blocks, .. } => {
+                request.extend_from_slice(gpu_blocks);
             }
             BrushKind::Solid { color } => {
                 request.push(color.premultiplied());
@@ -452,6 +460,7 @@ impl ToGpuBlocks for ImagePrimitiveCpu {
     }
 }
 
+/*
 #[derive(Debug)]
 pub struct BorderPrimitiveCpu {
     pub corner_instances: [BorderCornerInstance; 4],
@@ -463,7 +472,7 @@ impl ToGpuBlocks for BorderPrimitiveCpu {
     fn write_gpu_blocks(&self, mut request: GpuDataRequest) {
         request.extend_from_slice(&self.gpu_blocks);
     }
-}
+}*/
 
 // The gradient entry index for the first color stop
 pub const GRADIENT_DATA_FIRST_STOP: usize = 0;
@@ -929,7 +938,6 @@ impl ClipData {
 pub enum PrimitiveContainer {
     TextRun(TextRunPrimitiveCpu),
     Image(ImagePrimitiveCpu),
-    Border(BorderPrimitiveCpu),
     Picture(PicturePrimitive),
     Brush(BrushPrimitive),
 }
@@ -941,7 +949,6 @@ pub struct PrimitiveStore {
     pub cpu_pictures: Vec<PicturePrimitive>,
     pub cpu_images: Vec<ImagePrimitiveCpu>,
     pub cpu_metadata: Vec<PrimitiveMetadata>,
-    pub cpu_borders: Vec<BorderPrimitiveCpu>,
 }
 
 impl PrimitiveStore {
@@ -952,7 +959,6 @@ impl PrimitiveStore {
             cpu_text_runs: Vec::new(),
             cpu_pictures: Vec::new(),
             cpu_images: Vec::new(),
-            cpu_borders: Vec::new(),
         }
     }
 
@@ -963,7 +969,6 @@ impl PrimitiveStore {
             cpu_text_runs: recycle_vec(self.cpu_text_runs),
             cpu_pictures: recycle_vec(self.cpu_pictures),
             cpu_images: recycle_vec(self.cpu_images),
-            cpu_borders: recycle_vec(self.cpu_borders),
         }
     }
 
@@ -1004,6 +1009,7 @@ impl PrimitiveStore {
                     BrushKind::YuvImage { .. } => PrimitiveOpacity::opaque(),
                     BrushKind::RadialGradient { .. } => PrimitiveOpacity::translucent(),
                     BrushKind::LinearGradient { .. } => PrimitiveOpacity::translucent(),
+                    BrushKind::Border { .. } => PrimitiveOpacity::translucent(),
                     BrushKind::Picture => {
                         // TODO(gw): This is not currently used. In the future
                         //           we should detect opaque pictures.
@@ -1055,17 +1061,6 @@ impl PrimitiveStore {
                 self.cpu_images.push(image_cpu);
                 metadata
             }
-            PrimitiveContainer::Border(border_cpu) => {
-                let metadata = PrimitiveMetadata {
-                    opacity: PrimitiveOpacity::translucent(),
-                    prim_kind: PrimitiveKind::Border,
-                    cpu_prim_index: SpecificPrimitiveIndex(self.cpu_borders.len()),
-                    ..base_metadata
-                };
-
-                self.cpu_borders.push(border_cpu);
-                metadata
-            }
         };
 
         self.cpu_metadata.push(metadata);
@@ -1093,7 +1088,6 @@ impl PrimitiveStore {
     ) {
         let metadata = &mut self.cpu_metadata[prim_index.0];
         match metadata.prim_kind {
-            PrimitiveKind::Border => {}
             PrimitiveKind::Picture => {
                 self.cpu_pictures[metadata.cpu_prim_index.0]
                     .prepare_for_render(
@@ -1300,7 +1294,8 @@ impl PrimitiveStore {
                     BrushKind::Solid { .. } |
                     BrushKind::Clear |
                     BrushKind::Line { .. } |
-                    BrushKind::Picture { .. } => {}
+                    BrushKind::Picture { .. } |
+                    BrushKind::Border { .. } => {}
                 }
             }
         }
@@ -1312,10 +1307,6 @@ impl PrimitiveStore {
             request.push(metadata.local_clip_rect);
 
             match metadata.prim_kind {
-                PrimitiveKind::Border => {
-                    let border = &self.cpu_borders[metadata.cpu_prim_index.0];
-                    border.write_gpu_blocks(request);
-                }
                 PrimitiveKind::Image => {
                     let image = &self.cpu_images[metadata.cpu_prim_index.0];
                     image.write_gpu_blocks(request);

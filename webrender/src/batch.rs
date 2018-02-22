@@ -38,8 +38,6 @@ const OPAQUE_TASK_ADDRESS: RenderTaskAddress = RenderTaskAddress(0x7fff);
 pub enum TransformBatchKind {
     TextRun(GlyphFormat),
     Image(ImageBufferKind),
-    BorderCorner,
-    BorderEdge,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -77,6 +75,7 @@ pub enum BrushBatchKind {
     YuvImage(ImageBufferKind, YuvFormat, YuvColorSpace),
     RadialGradient,
     LinearGradient,
+    Border,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -703,6 +702,7 @@ impl AlphaBatchBuilder {
                     );
                 }
             }
+                /*
             PrimitiveKind::Border => {
                 let border_cpu =
                     &ctx.prim_store.cpu_borders[prim_metadata.cpu_prim_index.0];
@@ -759,7 +759,7 @@ impl AlphaBatchBuilder {
                         }
                     }
                 }
-            }
+            }*/
             PrimitiveKind::Image => {
                 let image_cpu = &ctx.prim_store.cpu_images[prim_metadata.cpu_prim_index.0];
 
@@ -1316,6 +1316,13 @@ impl BrushPrimitive {
         cached_gradients: &[CachedGradient],
     ) -> Option<(BrushBatchKind, BatchTextures, [i32; 3])> {
         match self.kind {
+            BrushKind::Border { .. } => {
+                Some((
+                    BrushBatchKind::Border,
+                    BatchTextures::no_texture(),
+                    [0; 3],
+                ))
+            }
             BrushKind::Line { .. } => {
                 Some((
                     BrushBatchKind::Line,
@@ -1460,7 +1467,6 @@ impl AlphaBatchHelpers for PrimitiveStore {
                 BlendMode::PremultipliedAlpha
             }
 
-            PrimitiveKind::Border |
             PrimitiveKind::Picture => {
                 BlendMode::PremultipliedAlpha
             }
@@ -1483,6 +1489,7 @@ impl AlphaBatchHelpers for PrimitiveStore {
                     BrushKind::YuvImage { .. } |
                     BrushKind::RadialGradient { .. } |
                     BrushKind::LinearGradient { .. } |
+                    BrushKind::Border { .. } |
                     BrushKind::Picture => {
                         BlendMode::PremultipliedAlpha
                     }

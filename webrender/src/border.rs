@@ -8,7 +8,7 @@ use clip::ClipSource;
 use ellipse::Ellipse;
 use frame_builder::FrameBuilder;
 use gpu_cache::GpuDataRequest;
-use prim_store::{BorderPrimitiveCpu, BrushClipMaskKind, BrushSegment, BrushSegmentDescriptor};
+use prim_store::{BrushClipMaskKind, BrushKind, BrushPrimitive, BrushSegment, BrushSegmentDescriptor};
 use prim_store::{EdgeAaSegmentMask, PrimitiveContainer, ScrollNodeAndClipChain};
 use util::{lerp, pack_as_float};
 
@@ -302,45 +302,48 @@ impl FrameBuilder {
         let right_color = right.border_color(2.0 / 3.0, 1.0, 0.7, 0.3).premultiplied();
         let bottom_color = bottom.border_color(2.0 / 3.0, 1.0, 0.7, 0.3).premultiplied();
 
-        let prim_cpu = BorderPrimitiveCpu {
-            corner_instances,
-            edges,
+        let prim = BrushPrimitive::new(
+            BrushKind::Border {
+                corner_instances,
+                edges,
 
-            // TODO(gw): In the future, we will build these on demand
-            //           from the deserialized display list, rather
-            //           than creating it immediately.
-            gpu_blocks: [
-                [
-                    pack_as_float(left.style as u32),
-                    pack_as_float(top.style as u32),
-                    pack_as_float(right.style as u32),
-                    pack_as_float(bottom.style as u32),
-                ].into(),
-                [widths.left, widths.top, widths.right, widths.bottom].into(),
-                left_color.into(),
-                top_color.into(),
-                right_color.into(),
-                bottom_color.into(),
-                [
-                    radius.top_left.width,
-                    radius.top_left.height,
-                    radius.top_right.width,
-                    radius.top_right.height,
-                ].into(),
-                [
-                    radius.bottom_right.width,
-                    radius.bottom_right.height,
-                    radius.bottom_left.width,
-                    radius.bottom_left.height,
-                ].into(),
-            ],
-        };
+                // TODO(gw): In the future, we will build these on demand
+                //           from the deserialized display list, rather
+                //           than creating it immediately.
+                gpu_blocks: [
+                    [
+                        pack_as_float(left.style as u32),
+                        pack_as_float(top.style as u32),
+                        pack_as_float(right.style as u32),
+                        pack_as_float(bottom.style as u32),
+                    ].into(),
+                    [widths.left, widths.top, widths.right, widths.bottom].into(),
+                    left_color.into(),
+                    top_color.into(),
+                    right_color.into(),
+                    bottom_color.into(),
+                    [
+                        radius.top_left.width,
+                        radius.top_left.height,
+                        radius.top_right.width,
+                        radius.top_right.height,
+                    ].into(),
+                    [
+                        radius.bottom_right.width,
+                        radius.bottom_right.height,
+                        radius.bottom_left.width,
+                        radius.bottom_left.height,
+                    ].into(),
+                ],
+            },
+            None,
+        );
 
         self.add_primitive(
             clip_and_scroll,
             info,
             clip_sources,
-            PrimitiveContainer::Border(prim_cpu),
+            PrimitiveContainer::Brush(prim),
         );
     }
 

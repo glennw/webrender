@@ -47,14 +47,6 @@ const SHADERS: &[Shader] = &[
     },
     // Prim shaders
     Shader {
-        name: "ps_border_corner",
-        features: PRIM_FEATURES,
-    },
-    Shader {
-        name: "ps_border_edge",
-        features: PRIM_FEATURES,
-    },
-    Shader {
         name: "ps_hardware_composite",
         features: PRIM_FEATURES,
     },
@@ -105,6 +97,14 @@ const SHADERS: &[Shader] = &[
     },
     Shader {
         name: "brush_linear_gradient",
+        features: &[],
+    },
+    Shader {
+        name: "brush_border_corner",
+        features: &[],
+    },
+    Shader {
+        name: "brush_border_edge",
         features: &[],
     },
 ];

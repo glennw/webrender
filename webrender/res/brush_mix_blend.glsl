@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#define VECS_PER_SPECIFIC_BRUSH 2
+#define VECS_PER_SPECIFIC_BRUSH 4
 
 #include shared,prim_shared,brush
 
@@ -19,20 +19,34 @@ void brush_vs(
     ivec3 user_data,
     PictureTask pic_task
 ) {
-    vec2 texture_size = vec2(textureSize(sCacheRGBA8, 0));
     vOp = user_data.x;
 
-    PictureTask src_task = fetch_picture_task(user_data.z);
-    vec2 src_uv = vi.snapped_device_pos +
-                  src_task.common_data.task_rect.p0 -
-                  src_task.content_origin;
-    vSrcUv = vec3(src_uv / texture_size, src_task.common_data.texture_layer_index);
+    vec2 texture_size = vec2(textureSize(sCacheRGBA8, 0));
+
+    ImageBrush prim = fetch_image_brush(prim_address);
+    ImageResource img_src = fetch_image_resource(user_data.z);
+    vSrcUv.z = img_src.layer;
+
+    vec2 uv0 = img_src.uv_rect.p0;
+    vec2 uv1 = img_src.uv_rect.p1;
+
+    vec2 f = (vi.local_pos - local_rect.p0) / local_rect.size;
+
+    vec2 x = mix(prim.uv_tl, prim.uv_tr, f.x);
+    vec2 y = mix(prim.uv_bl, prim.uv_br, f.x);
+    vec2 uv = mix(x, y, f.y);
+
+    vSrcUv.xy = mix(uv0, uv1, uv) / texture_size;
 
     RenderTaskCommonData backdrop_task = fetch_render_task_common_data(user_data.y);
-    vec2 backdrop_uv = vi.snapped_device_pos +
-                       backdrop_task.task_rect.p0 -
-                       src_task.content_origin;
-    vBackdropUv = vec3(backdrop_uv / texture_size, backdrop_task.texture_layer_index);
+
+    vBackdropUv.z = backdrop_task.texture_layer_index;
+
+    vBackdropUv.xy = mix(
+        backdrop_task.task_rect.p0,
+        backdrop_task.task_rect.p0 + backdrop_task.task_rect.size,
+        f
+    ) / texture_size;
 }
 #endif
 

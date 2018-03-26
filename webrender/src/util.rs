@@ -7,6 +7,7 @@ use api::{DevicePoint, DeviceRect, DeviceSize, LayerPixel, LayerPoint, LayerRect
 use api::{LayoutPixel, WorldPixel, WorldRect};
 use euclid::{Point2D, Rect, Size2D, TypedPoint2D, TypedPoint3D, TypedRect, TypedSize2D};
 use euclid::{TypedTransform2D, TypedTransform3D, TypedVector2D};
+use gpu_types::UvRect;
 use num_traits::Zero;
 use std::{i32, f32};
 
@@ -160,21 +161,34 @@ pub fn calculate_screen_bounding_rect(
     transform: &LayerToWorldFastTransform,
     rect: &LayerRect,
     device_pixel_scale: DevicePixelScale,
+    uv_rect: Option<&mut UvRect>,
 ) -> DeviceIntRect {
     let points = [
         transform.transform_point2d(&rect.origin),
         transform.transform_point2d(&rect.top_right()),
-        transform.transform_point2d(&rect.bottom_left()),
         transform.transform_point2d(&rect.bottom_right()),
+        transform.transform_point2d(&rect.bottom_left()),
     ];
 
-    let rect = WorldRect::from_points(&points) * device_pixel_scale;
     let max_rect = DeviceRect::max_rect();
-    rect
+
+    let rect = (WorldRect::from_points(&points) * device_pixel_scale)
         .round_out()
         .intersection(&max_rect)
-        .unwrap_or(max_rect)
-        .to_i32()
+        .unwrap_or(max_rect);
+
+    // todo: !!!!!!!!!!!!!!!!!!!!! snap !!!!!!!!!!!!!!!!!!!!
+
+    // todo: !!!!!!!!!!!!!!!!! clamp 0..1 for near plane clip bug
+
+    if let Some(uv_rect) = uv_rect {
+        for (src, uv) in points.iter().zip(uv_rect.points.iter_mut()) {
+            uv.x = (src.x - rect.origin.x) / rect.size.width;
+            uv.y = (src.y - rect.origin.y) / rect.size.height;
+        }
+    }
+
+    rect.to_i32()
 }
 
 pub fn _subtract_rect<U>(

@@ -18,7 +18,7 @@ use frame_builder::PrimitiveRunContext;
 use glyph_rasterizer::{FontInstance, FontTransform};
 use gpu_cache::{GpuBlockData, GpuCache, GpuCacheAddress, GpuCacheHandle, GpuDataRequest,
                 ToGpuBlocks};
-use gpu_types::{ClipChainRectIndex};
+use gpu_types::{ClipChainRectIndex, UvRect};
 use picture::{PictureCompositeMode, PictureKind, PicturePrimitive};
 use render_task::{BlitSource, RenderTask, RenderTaskCacheKey, RenderTaskCacheKeyKind};
 use render_task::RenderTaskId;
@@ -339,6 +339,8 @@ impl BrushPrimitive {
             BrushKind::YuvImage { .. } => {
             }
             BrushKind::Image { .. } => {
+                request.push([0.0; 4]);
+                request.push([0.0; 4]);
                 request.push([0.0; 4]);
                 request.push(PremultipliedColorF::WHITE);
             }
@@ -1159,6 +1161,7 @@ impl PrimitiveStore {
         pic_state: &mut PictureState,
         frame_context: &FrameBuildingContext,
         frame_state: &mut FrameBuildingState,
+        uv_rect: UvRect,
     ) {
         let metadata = &mut self.cpu_metadata[prim_index.0];
         match metadata.prim_kind {
@@ -1356,6 +1359,7 @@ impl PrimitiveStore {
                                 pic_state,
                                 frame_context,
                                 frame_state,
+                                uv_rect,
                             );
                     }
                     BrushKind::Solid { .. } |
@@ -1595,6 +1599,7 @@ impl PrimitiveStore {
                 &prim_run_context.scroll_node.world_content_transform,
                 &segment.local_rect,
                 frame_context.device_pixel_scale,
+                None,
             );
 
             let intersected_rect = combined_outer_rect.intersection(&segment_screen_rect);
@@ -1849,6 +1854,8 @@ impl PrimitiveStore {
             }
         }
 
+        let mut uv_rect = UvRect::zero();
+
         let (local_rect, unclipped_device_rect) = {
             let metadata = &mut self.cpu_metadata[prim_index.0];
             if metadata.local_rect.size.width <= 0.0 ||
@@ -1861,9 +1868,11 @@ impl PrimitiveStore {
             // the picture context. This ensures that even if the primitive itself
             // is not visible, any effects from the blur radius will be correctly
             // taken into account.
+            //println!("\t\tp {:?} if={:?} lr={:?}", prim_index, pic_context.inflation_factor, metadata.local_rect);
+
             let local_rect = metadata
                 .local_rect
-                .inflate(pic_context.inflation_factor, pic_context.inflation_factor)
+                //.inflate(pic_context.inflation_factor, pic_context.inflation_factor)
                 .intersection(&metadata.local_clip_rect);
             let local_rect = match local_rect {
                 Some(local_rect) => local_rect,
@@ -1874,16 +1883,43 @@ impl PrimitiveStore {
                 &prim_run_context.scroll_node.world_content_transform,
                 &local_rect,
                 frame_context.device_pixel_scale,
+                Some(&mut uv_rect),
             );
 
-            metadata.screen_rect = screen_bounding_rect
-                .intersection(&prim_run_context.clip_chain.combined_outer_screen_rect)
-                .map(|clipped| {
+            let clipped_screen_bounding_rect = screen_bounding_rect
+                .intersection(&prim_run_context.clip_chain.combined_outer_screen_rect);
+
+            metadata.screen_rect = if pic_context.inflation_factor == 0.0 {
+                clipped_screen_bounding_rect
+                    .map(|clipped| {
+                        ScreenRect {
+                            clipped,
+                            unclipped: screen_bounding_rect,
+                        }
+                    })
+            } else {
+                let visible_local_rect = metadata
+                    .local_rect
+                    .inflate(pic_context.inflation_factor, pic_context.inflation_factor)
+                    .intersection(&metadata.local_clip_rect)
+                    .expect("bug: already found to be visible in local space");
+
+                let visible_screen_bounding_rect = calculate_screen_bounding_rect(
+                    &prim_run_context.scroll_node.world_content_transform,
+                    &visible_local_rect,
+                    frame_context.device_pixel_scale,
+                    None,
+                );
+
+                visible_screen_bounding_rect
+                    .intersection(&prim_run_context.clip_chain.combined_outer_screen_rect)
+                    .map(|_| {
                     ScreenRect {
-                        clipped,
+                        clipped: clipped_screen_bounding_rect.unwrap_or(DeviceIntRect::zero()),
                         unclipped: screen_bounding_rect,
                     }
-                });
+                })
+            };
 
             if metadata.screen_rect.is_none() {
                 return None;
@@ -1913,6 +1949,7 @@ impl PrimitiveStore {
             pic_state,
             frame_context,
             frame_state,
+            uv_rect,
         );
 
         Some(local_rect)

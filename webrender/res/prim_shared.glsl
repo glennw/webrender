@@ -727,6 +727,29 @@ void write_clip(vec2 global_pos, ClipArea area) {
     );
     vClipMaskUv = vec3(uv, area.common_data.texture_layer_index);
 }
+
+struct ImageBrush {
+    RectWithSize task_rect;
+    vec2 uv_tl;
+    vec2 uv_tr;
+    vec2 uv_br;
+    vec2 uv_bl;
+    vec4 color;
+};
+
+ImageBrush fetch_image_brush(int address) {
+    vec4[4] data = fetch_from_resource_cache_4(address);
+    RectWithSize task_rect = RectWithSize(data[0].xy, data[0].zw);
+    ImageBrush brush = ImageBrush(
+        task_rect,
+        data[1].xy,
+        data[1].zw,
+        data[2].xy,
+        data[2].zw,
+        data[3]
+    );
+    return brush;
+}
 #endif //WR_VERTEX_SHADER
 
 #ifdef WR_FRAGMENT_SHADER

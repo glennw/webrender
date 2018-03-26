@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#define VECS_PER_SPECIFIC_BRUSH 2
+#define VECS_PER_SPECIFIC_BRUSH 4
 
 #include shared,prim_shared,brush
 
@@ -26,18 +26,6 @@ flat varying vec4 vColor;
     #define IMAGE_SOURCE_ALPHA              1
     #define IMAGE_SOURCE_MASK_FROM_COLOR    2
 #endif
-
-struct ImageBrush {
-    RectWithSize rendered_task_rect;
-    vec4 color;
-};
-
-ImageBrush fetch_image_primitive(int address) {
-    vec4[2] data = fetch_from_resource_cache_2(address);
-    RectWithSize rendered_task_rect = RectWithSize(data[0].xy, data[0].zw);
-    ImageBrush brush = ImageBrush(rendered_task_rect, data[1]);
-    return brush;
-}
 
 void brush_vs(
     VertexInfo vi,
@@ -73,21 +61,25 @@ void brush_vs(
     vec2 f;
 
 #ifdef WR_FEATURE_ALPHA_PASS
-    ImageBrush image = fetch_image_primitive(prim_address);
+    ImageBrush image = fetch_image_brush(prim_address);
     vColor = image.color;
 
     // Derive the texture coordinates for this image, based on
     // whether the source image is a local-space or screen-space
     // image.
     switch (user_data.z) {
-        case RASTER_SCREEN:
-            f = (vi.snapped_device_pos - image.rendered_task_rect.p0) / image.rendered_task_rect.size;
+        case RASTER_SCREEN: {
+            f = (vi.local_pos - local_rect.p0) / local_rect.size;
+            vec2 x = mix(image.uv_tl, image.uv_tr, f.x);
+            vec2 y = mix(image.uv_bl, image.uv_br, f.x);
+            f = mix(x, y, f.y);
 
             vUvClipBounds = vec4(
                 min_uv,
                 max_uv
             ) / texture_size.xyxy;
             break;
+        }
         case RASTER_LOCAL:
         default: {
             f = (vi.local_pos - local_rect.p0) / local_rect.size;

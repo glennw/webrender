@@ -645,7 +645,6 @@ impl AlphaBatchBuilder {
 
                         match picture.surface {
                             Some(cache_task_id) => {
-                                let cache_task_address = render_tasks.get_task_address(cache_task_id);
                                 let textures = BatchTextures::render_target_cache();
 
                                 match picture.kind {
@@ -797,6 +796,10 @@ impl AlphaBatchBuilder {
                                                             BatchTextures::render_target_cache(),
                                                         );
 
+                                                        let uv_rect_address = render_tasks[cache_task_id]
+                                                            .get_texture_handle()
+                                                            .as_int(gpu_cache);
+
                                                         let filter_mode = match filter {
                                                             FilterOp::Blur(..) => 0,
                                                             FilterOp::Contrast(..) => 1,
@@ -845,7 +848,7 @@ impl AlphaBatchBuilder {
                                                             edge_flags: EdgeAaSegmentMask::empty(),
                                                             brush_flags: BrushFlags::empty(),
                                                             user_data: [
-                                                                cache_task_address.0 as i32,
+                                                                uv_rect_address,
                                                                 filter_mode,
                                                                 user_data,
                                                             ],
@@ -872,7 +875,10 @@ impl AlphaBatchBuilder {
                                                 );
                                                 let batch = self.batch_list.get_suitable_batch(key, &task_relative_bounding_rect);
                                                 let backdrop_task_address = render_tasks.get_task_address(backdrop_id);
-                                                let source_task_address = render_tasks.get_task_address(source_id);
+
+                                                let uv_rect_address = render_tasks[cache_task_id]
+                                                    .get_texture_handle()
+                                                    .as_int(gpu_cache);
 
                                                 let instance = BrushInstance {
                                                     picture_address: task_address,
@@ -887,7 +893,7 @@ impl AlphaBatchBuilder {
                                                     user_data: [
                                                         mode as u32 as i32,
                                                         backdrop_task_address.0 as i32,
-                                                        source_task_address.0 as i32,
+                                                        uv_rect_address,
                                                     ],
                                                 };
 

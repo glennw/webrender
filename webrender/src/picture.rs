@@ -8,6 +8,7 @@ use box_shadow::{BLUR_SAMPLE_SCALE};
 use clip_scroll_tree::ClipScrollNodeIndex;
 use frame_builder::{FrameBuildingContext, FrameBuildingState, PictureState};
 use gpu_cache::{GpuCacheHandle, GpuDataRequest};
+use gpu_types::UvRect;
 use prim_store::{PrimitiveIndex, PrimitiveRun, PrimitiveRunLocalRect};
 use prim_store::{PrimitiveMetadata, ScrollNodeAndClipChain};
 use render_task::{ClearMode, RenderTask};
@@ -91,6 +92,7 @@ pub struct PicturePrimitive {
     // The current screen-space rect of the rendered
     // portion of this picture.
     task_rect: DeviceIntRect,
+    uv_rect: UvRect,
 }
 
 impl PicturePrimitive {
@@ -136,6 +138,7 @@ impl PicturePrimitive {
             },
             apply_local_clip_rect,
             pipeline_id,
+            uv_rect: UvRect::zero(),
             task_rect: DeviceIntRect::zero(),
         }
     }
@@ -176,6 +179,10 @@ impl PicturePrimitive {
                         local_content_rect.inflate(inflate_size, inflate_size)
                                           .translate(&offset)
                     }
+                    Some(PictureCompositeMode::Filter(FilterOp::Blur(blur_radius))) => {
+                        let inflate_size = blur_radius * BLUR_SAMPLE_SCALE;
+                        local_content_rect.inflate(inflate_size, inflate_size)
+                    }
                     _ => {
                         local_content_rect
                     }
@@ -192,6 +199,7 @@ impl PicturePrimitive {
         pic_state: &mut PictureState,
         frame_context: &FrameBuildingContext,
         frame_state: &mut FrameBuildingState,
+        uv_rect: UvRect,
     ) {
         let content_scale = LayerToWorldScale::new(1.0) * frame_context.device_pixel_scale;
         let prim_screen_rect = prim_metadata
@@ -386,14 +394,35 @@ impl PicturePrimitive {
         // rect being different than last time, invalidate the GPU
         // cache entry for this picture to ensure that the correct
         // task rect is provided to the image shader.
-        if self.task_rect != device_rect {
+        if self.uv_rect != uv_rect || device_rect != self.task_rect {
             frame_state.gpu_cache.invalidate(&prim_metadata.gpu_location);
+            self.uv_rect = uv_rect;
             self.task_rect = device_rect;
+
+            let c = &device_rect; //&prim_screen_rect.clipped;
+            let uc = &prim_screen_rect.unclipped;
+
+            for p in &mut self.uv_rect.points {
+                p.x = (p.x - (c.origin.x as f32 - uc.origin.x as f32) / uc.size.width as f32) * uc.size.width as f32 / c.size.width as f32;
+                p.y = (p.y - (c.origin.y as f32 - uc.origin.y as f32) / uc.size.height as f32) * uc.size.height as f32 / c.size.height as f32;
+            }
         }
     }
 
     pub fn write_gpu_blocks(&self, request: &mut GpuDataRequest) {
         request.push(self.task_rect.to_f32());
+        request.push([
+            self.uv_rect.points[0].x,
+            self.uv_rect.points[0].y,
+            self.uv_rect.points[1].x,
+            self.uv_rect.points[1].y,
+        ]);
+        request.push([
+            self.uv_rect.points[2].x,
+            self.uv_rect.points[2].y,
+            self.uv_rect.points[3].x,
+            self.uv_rect.points[3].y,
+        ]);
 
         match self.kind {
             PictureKind::Image { composite_mode, .. } => {

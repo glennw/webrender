@@ -447,13 +447,23 @@ impl ClipSources {
         let can_calculate_inner_rect =
             transform.preserves_2d_axis_alignment() && !transform.has_perspective_component();
         let screen_inner_rect = if can_calculate_inner_rect {
-            calculate_screen_bounding_rect(transform, &self.local_inner_rect, device_pixel_scale)
+            calculate_screen_bounding_rect(
+                transform,
+                &self.local_inner_rect,
+                device_pixel_scale,
+                None,
+            )
         } else {
             DeviceIntRect::zero()
         };
 
         let screen_outer_rect = self.local_outer_rect.map(|outer_rect|
-            calculate_screen_bounding_rect(transform, &outer_rect, device_pixel_scale)
+            calculate_screen_bounding_rect(
+                transform,
+                &outer_rect,
+                device_pixel_scale,
+                None,
+            )
         );
 
         (screen_inner_rect, screen_outer_rect)

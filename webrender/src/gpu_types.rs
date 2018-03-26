@@ -267,6 +267,20 @@ impl ClipScrollNodeData {
 #[repr(C)]
 pub struct ClipChainRectIndex(pub usize);
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+#[repr(C)]
+pub struct UvRect {
+    pub points: [DevicePoint; 4],
+}
+
+impl UvRect {
+    pub fn zero() -> UvRect {
+        UvRect {
+            points: [DevicePoint::zero(); 4],
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]

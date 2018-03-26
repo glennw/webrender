@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#define VECS_PER_SPECIFIC_BRUSH 2
+#define VECS_PER_SPECIFIC_BRUSH 4
 #define FORCE_NO_PERSPECTIVE
 
 #include shared,prim_shared,brush
@@ -24,16 +24,36 @@ void brush_vs(
     ivec3 user_data,
     PictureTask pic_task
 ) {
-    PictureTask src_task = fetch_picture_task(user_data.x);
     vec2 texture_size = vec2(textureSize(sColor0, 0).xy);
-    vec2 uv = vi.snapped_device_pos +
-              src_task.common_data.task_rect.p0 -
-              src_task.content_origin;
-    vUv = vec3(uv / texture_size, src_task.common_data.texture_layer_index);
 
-    vec2 uv0 = src_task.common_data.task_rect.p0;
-    vec2 uv1 = uv0 + src_task.common_data.task_rect.size;
+    ImageBrush prim = fetch_image_brush(prim_address);
+    ImageResource img_src = fetch_image_resource(user_data.x);
+
+    ////
+    // prim.uv_tl = map(prim.uv_tl);
+    // prim.uv_tr = map(prim.uv_tr);
+    // prim.uv_br = map(prim.uv_br);
+    // prim.uv_bl = map(prim.uv_bl);
+    ////
+
+    vUv.z = img_src.layer;
+
+    vec2 f = (vi.local_pos - local_rect.p0) / local_rect.size;
+
+    vec2 x = mix(prim.uv_tl, prim.uv_tr, f.x);
+    vec2 y = mix(prim.uv_bl, prim.uv_br, f.x);
+    vec2 uv = mix(x, y, f.y);
+
+    vec2 uv0 = img_src.uv_rect.p0;
+    vec2 uv1 = img_src.uv_rect.p1;
+
+    vUv.xy = mix(uv0, uv1, uv) / texture_size;
     vUvClipBounds = vec4(uv0, uv1) / texture_size.xyxy;
+
+    // uv0 -= prim.task_rect.p0;
+    // uv1 += prim.task_rect.size;
+
+    // ============================
 
     float lumR = 0.2126;
     float lumG = 0.7152;

@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use api::{DevicePoint, LayoutToWorldTransform, WorldToLayoutTransform};
+use api::{DevicePoint, LayoutRect, LayoutToWorldTransform, WorldToLayoutTransform};
 use gpu_cache::{GpuCacheAddress, GpuDataRequest};
 use prim_store::EdgeAaSegmentMask;
 use render_task::RenderTaskAddress;
@@ -66,6 +66,15 @@ pub struct BlurInstance {
     pub task_address: RenderTaskAddress,
     pub src_task_address: RenderTaskAddress,
     pub blur_direction: BlurDirection,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+#[cfg_attr(feature = "capture", derive(Serialize))]
+#[cfg_attr(feature = "replay", derive(Deserialize))]
+pub struct BorderInstance {
+    pub task_address: RenderTaskAddress,
+    pub local_rect: LayoutRect,
 }
 
 /// A clipping primitive drawn into the clipping mask.

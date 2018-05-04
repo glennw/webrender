@@ -243,6 +243,30 @@ impl OpacityBinding {
 }
 
 #[derive(Debug)]
+pub struct BorderSegment {
+    patch_rect: LayoutRect,
+}
+
+impl BorderSegment {
+    pub fn new(
+        patch_rect: LayoutRect,
+    ) -> BorderSegment {
+        BorderSegment {
+            patch_rect,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum BorderSource {
+    Image(ImageRequest),
+    Border {
+        handle: Option<RenderTaskCacheEntryHandle>,
+        segments: Vec<BorderSegment>,
+    },
+}
+
+#[derive(Debug)]
 pub enum BrushKind {
     Solid {
         color: ColorF,
@@ -289,7 +313,7 @@ pub enum BrushKind {
         stretch_size: LayoutSize,
     },
     Border {
-        request: ImageRequest,
+        source: BorderSource,
     },
 }
 
@@ -363,15 +387,14 @@ pub struct BrushSegment {
 
 impl BrushSegment {
     pub fn new(
-        origin: LayoutPoint,
-        size: LayoutSize,
+        local_rect: LayoutRect,
         may_need_clip_mask: bool,
         edge_flags: EdgeAaSegmentMask,
         extra_data: [f32; 4],
         brush_flags: BrushFlags,
     ) -> BrushSegment {
         BrushSegment {
-            local_rect: LayoutRect::new(origin, size),
+            local_rect,
             clip_task_id: BrushSegmentTaskId::Opaque,
             may_need_clip_mask,
             edge_flags,
@@ -1678,21 +1701,70 @@ impl PrimitiveStore {
                             );
                         }
                     }
-                    BrushKind::Border { request, .. } => {
-                        let image_properties = frame_state
-                            .resource_cache
-                            .get_image_properties(request.key);
+                    BrushKind::Border { ref mut source, .. } => {
+                        match *source {
+                            BorderSource::Image(request) => {
+                                let image_properties = frame_state
+                                    .resource_cache
+                                    .get_image_properties(request.key);
 
-                        if let Some(image_properties) = image_properties {
-                            // Update opacity for this primitive to ensure the correct
-                            // batching parameters are used.
-                            metadata.opacity.is_opaque =
-                                image_properties.descriptor.is_opaque;
+                                if let Some(image_properties) = image_properties {
+                                    // Update opacity for this primitive to ensure the correct
+                                    // batching parameters are used.
+                                    metadata.opacity.is_opaque =
+                                        image_properties.descriptor.is_opaque;
 
-                            frame_state.resource_cache.request_image(
-                                request,
-                                frame_state.gpu_cache,
-                            );
+                                    frame_state.resource_cache.request_image(
+                                        request,
+                                        frame_state.gpu_cache,
+                                    );
+                                }
+                            }
+                            BorderSource::Border { ref mut handle, .. } => {
+                                // todo: !!!!!!!!!!
+                                let size = DeviceIntSize::new(500, 500);
+                                let mut update_segments = false;
+
+                                *handle = Some(frame_state.resource_cache.request_render_task(
+                                    RenderTaskCacheKey {
+                                        size,
+                                        kind: RenderTaskCacheKeyKind::Border,
+                                    },
+                                    frame_state.gpu_cache,
+                                    frame_state.render_tasks,
+                                    None,
+                                    false,          // todo
+                                    |render_tasks| {
+                                        update_segments = true;
+
+                                        let task = RenderTask::new_border(
+                                            size,
+                                        );
+                                        let task_id = render_tasks.add(task);
+
+                                        pic_state.tasks.push(task_id);
+
+                                        task_id
+                                    }
+                                ));
+
+                                if update_segments {
+                                    let descriptor = BrushSegmentDescriptor {
+                                        // todo: !!!!!!!!!!!!! reccycle
+                                        segments: Vec::new(),
+                                        clip_mask_kind: BrushClipMaskKind::Unknown,
+                                    };
+
+                                    for segment in &mut brush.segment_desc.as_mut().unwrap().segments {
+                                        segment.extra_data = [
+                                            0.0,
+                                            0.0,
+                                            size.width as f32,
+                                            size.height as f32,
+                                        ];
+                                    }
+                                }
+                            }
                         }
                     }
                     BrushKind::RadialGradient { gradient_index, stops_range, .. } => {
@@ -1940,8 +2012,7 @@ impl PrimitiveStore {
                     segment_builder.build(|segment| {
                         segments.push(
                             BrushSegment::new(
-                                segment.rect.origin,
-                                segment.rect.size,
+                                segment.rect,
                                 segment.has_mask,
                                 segment.edge_flags,
                                 [0.0; 4],

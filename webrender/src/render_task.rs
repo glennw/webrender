@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use api::{DeviceIntPoint, DeviceIntRect, DeviceIntSize, DeviceSize, ImageDescriptor, ImageFormat};
+use api::{NormalBorder, BorderWidths};
 #[cfg(feature = "pathfinder")]
 use api::FontRenderMode;
 use box_shadow::{BoxShadowCacheKey};
@@ -259,6 +260,12 @@ pub struct BlitTask {
 #[derive(Debug)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
+pub struct BorderTask {
+}
+
+#[derive(Debug)]
+#[cfg_attr(feature = "capture", derive(Serialize))]
+#[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct RenderTaskData {
     pub data: [f32; FLOATS_PER_RENDER_TASK_INFO],
 }
@@ -277,6 +284,7 @@ pub enum RenderTaskKind {
     Readback(DeviceIntRect),
     Scaling(RenderTargetKind),
     Blit(BlitTask),
+    Border(BorderTask),
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
@@ -329,6 +337,19 @@ impl RenderTask {
             children: Vec::new(),
             location: RenderTaskLocation::Dynamic(None, Some(screen_rect.size)),
             kind: RenderTaskKind::Readback(screen_rect),
+            clear_mode: ClearMode::Transparent,
+            saved_index: None,
+        }
+    }
+
+    pub fn new_border(
+        size: DeviceIntSize,
+    ) -> Self {
+        RenderTask {
+            children: Vec::new(),
+            location: RenderTaskLocation::Dynamic(None, Some(size)),
+            kind: RenderTaskKind::Border(BorderTask {
+            }),
             clear_mode: ClearMode::Transparent,
             saved_index: None,
         }
@@ -603,6 +624,7 @@ impl RenderTask {
             }
 
             RenderTaskKind::ClipRegion(..) |
+            RenderTaskKind::Border(..) |
             RenderTaskKind::Blit(..) => {
                 UvRectKind::Rect
             }
@@ -655,6 +677,7 @@ impl RenderTask {
             RenderTaskKind::Glyph(_) => {
                 [1.0, 0.0, 0.0]
             }
+            RenderTaskKind::Border(..) |
             RenderTaskKind::Readback(..) |
             RenderTaskKind::Scaling(..) |
             RenderTaskKind::Blit(..) => {
@@ -692,6 +715,7 @@ impl RenderTask {
             RenderTaskKind::Scaling(..) |
             RenderTaskKind::Blit(..) |
             RenderTaskKind::CacheMask(..) |
+            RenderTaskKind::Border(..) |
             RenderTaskKind::Glyph(..) => {
                 panic!("texture handle not supported for this task kind");
             }
@@ -763,6 +787,7 @@ impl RenderTask {
                 target_kind
             }
 
+            RenderTaskKind::Border(..) |
             RenderTaskKind::Picture(..) => {
                 RenderTargetKind::Color
             }
@@ -788,6 +813,7 @@ impl RenderTask {
             RenderTaskKind::Scaling(..) |
             RenderTaskKind::ClipRegion(..) |
             RenderTaskKind::Blit(..) |
+            RenderTaskKind::Border(..) |
             RenderTaskKind::Glyph(..) => false,
 
             // TODO(gw): For now, we've disabled the shared clip mask
@@ -825,6 +851,7 @@ impl RenderTask {
             RenderTaskKind::Blit(..) |
             RenderTaskKind::ClipRegion(..) |
             RenderTaskKind::CacheMask(..) |
+            RenderTaskKind::Border(..) |
             RenderTaskKind::Glyph(..) => {
                 return;
             }
@@ -878,6 +905,9 @@ impl RenderTask {
                 pt.new_level("Blit".to_owned());
                 pt.add_item(format!("source: {:?}", task.source));
             }
+            RenderTaskKind::Border(..) => {
+                pt.new_level("Border".to_owned());
+            }
             RenderTaskKind::Glyph(..) => {
                 pt.new_level("Glyph".to_owned());
             }
@@ -918,6 +948,7 @@ pub enum RenderTaskCacheKeyKind {
     #[allow(dead_code)]
     Glyph(GpuGlyphCacheKey),
     Picture(PictureCacheKey),
+    Border,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]

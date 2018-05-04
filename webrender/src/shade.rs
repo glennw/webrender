@@ -403,6 +403,7 @@ fn create_prim_shader(
         VertexArrayKind::DashAndDot => desc::BORDER_CORNER_DASH_AND_DOT,
         VertexArrayKind::VectorStencil => desc::VECTOR_STENCIL,
         VertexArrayKind::VectorCover => desc::VECTOR_COVER,
+        VertexArrayKind::Border => desc::BORDER,
     };
 
     let program = device.create_program(name, &prefix, &vertex_descriptor);
@@ -464,6 +465,8 @@ pub struct Shaders {
     // of these shaders are then used by the primitive shaders.
     pub cs_blur_a8: LazilyCompiledShader,
     pub cs_blur_rgba8: LazilyCompiledShader,
+    pub cs_border_corner: LazilyCompiledShader,
+    pub cs_border_edge: LazilyCompiledShader,
 
     // Brush shaders
     brush_solid: BrushShader,
@@ -493,8 +496,6 @@ pub struct Shaders {
     pub ps_text_run: TextShader,
     pub ps_text_run_dual_source: TextShader,
     ps_image: Vec<Option<PrimitiveShader>>,
-    ps_border_corner: PrimitiveShader,
-    ps_border_edge: PrimitiveShader,
 
     ps_split_composite: LazilyCompiledShader,
 }
@@ -706,17 +707,19 @@ impl Shaders {
             }
         }
 
-        let ps_border_corner = PrimitiveShader::new(
-            "ps_border_corner",
-             device,
+        let cs_border_corner = LazilyCompiledShader::new(
+            ShaderKind::Cache(VertexArrayKind::Border),
+            "cs_border_corner",
              &[],
+             device,
              options.precache_shaders,
         )?;
 
-        let ps_border_edge = PrimitiveShader::new(
-            "ps_border_edge",
-             device,
+        let cs_border_edge = LazilyCompiledShader::new(
+            ShaderKind::Cache(VertexArrayKind::Border),
+            "cs_border_edge",
              &[],
+             device,
              options.precache_shaders,
         )?;
 
@@ -735,6 +738,8 @@ impl Shaders {
         Ok(Shaders {
             cs_blur_a8,
             cs_blur_rgba8,
+            cs_border_corner,
+            cs_border_edge,
             brush_solid,
             brush_image,
             brush_blend,
@@ -750,8 +755,6 @@ impl Shaders {
             ps_text_run,
             ps_text_run_dual_source,
             ps_image,
-            ps_border_corner,
-            ps_border_edge,
             ps_split_composite,
         })
     }
@@ -820,12 +823,6 @@ impl Shaders {
                             .as_mut()
                             .expect("Unsupported image shader kind")
                     }
-                    TransformBatchKind::BorderCorner => {
-                        &mut self.ps_border_corner
-                    }
-                    TransformBatchKind::BorderEdge => {
-                        &mut self.ps_border_edge
-                    }
                 };
                 prim_shader.get(transform_kind)
             }
@@ -862,8 +859,8 @@ impl Shaders {
                 shader.deinit(device);
             }
         }
-        self.ps_border_corner.deinit(device);
-        self.ps_border_edge.deinit(device);
+        self.cs_border_corner.deinit(device);
+        self.cs_border_edge.deinit(device);
         self.ps_split_composite.deinit(device);
     }
 }

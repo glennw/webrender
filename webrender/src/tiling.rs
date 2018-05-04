@@ -4,7 +4,7 @@
 
 use api::{ColorF, DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixelScale, DeviceUintPoint};
 use api::{DeviceUintRect, DeviceUintSize, DocumentLayer, FilterOp, ImageFormat, LayoutRect};
-use api::{MixBlendMode, PipelineId};
+use api::{LayoutPoint, LayoutSize, MixBlendMode, PipelineId};
 use batch::{AlphaBatchBuilder, AlphaBatchContainer, ClipBatcher, resolve_image};
 use clip::{ClipStore};
 use clip_scroll_tree::{ClipScrollTree, ClipScrollNodeIndex};
@@ -12,7 +12,7 @@ use device::{FrameId, Texture};
 #[cfg(feature = "pathfinder")]
 use euclid::{TypedPoint2D, TypedVector2D};
 use gpu_cache::{GpuCache};
-use gpu_types::{BlurDirection, BlurInstance};
+use gpu_types::{BorderInstance, BlurDirection, BlurInstance};
 use gpu_types::{ClipScrollNodeData, ZBufferIdGenerator};
 use internal_types::{FastHashMap, SavedTargetIndex, SourceTexture};
 #[cfg(feature = "pathfinder")]
@@ -433,6 +433,7 @@ impl RenderTarget for ColorRenderTarget {
                 }
             }
             RenderTaskKind::ClipRegion(..) |
+            RenderTaskKind::Border(..) |
             RenderTaskKind::CacheMask(..) => {
                 panic!("Should not be added to color target!");
             }
@@ -565,6 +566,7 @@ impl RenderTarget for AlphaRenderTarget {
             RenderTaskKind::Readback(..) |
             RenderTaskKind::Picture(..) |
             RenderTaskKind::Blit(..) |
+            RenderTaskKind::Border(..) |
             RenderTaskKind::Glyph(..) => {
                 panic!("BUG: should not be added to alpha target!");
             }
@@ -627,6 +629,8 @@ pub struct TextureCacheRenderTarget {
     pub horizontal_blurs: Vec<BlurInstance>,
     pub blits: Vec<BlitJob>,
     pub glyphs: Vec<GlyphJob>,
+    pub border_edges: Vec<BorderInstance>,
+    pub border_corners: Vec<BorderInstance>,
 }
 
 impl TextureCacheRenderTarget {
@@ -636,6 +640,8 @@ impl TextureCacheRenderTarget {
             horizontal_blurs: vec![],
             blits: vec![],
             glyphs: vec![],
+            border_corners: vec![],
+            border_edges: vec![],
         }
     }
 
@@ -677,6 +683,15 @@ impl TextureCacheRenderTarget {
                         });
                     }
                 }
+            }
+            RenderTaskKind::Border(..) => {
+                self.border_corners.push(BorderInstance {
+                    task_address,
+                    local_rect: LayoutRect::new(
+                        LayoutPoint::new(0.0, 0.0),
+                        LayoutSize::new(500.0, 500.0),
+                    ),
+                });
             }
             RenderTaskKind::Glyph(ref mut task_info) => {
                 self.add_glyph_task(task_info, target_rect.0)

@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use api::{AlphaType, BorderDetails, BorderDisplayItem, BuiltDisplayListIter, ClipAndScrollInfo};
-use api::{ClipId, ColorF, ComplexClipRegion, DeviceIntPoint, DeviceIntRect, DeviceIntSize};
+use api::{BorderRadius, ClipId, ColorF, ComplexClipRegion, DeviceIntPoint, DeviceIntRect, DeviceIntSize};
 use api::{DevicePixelScale, DeviceUintRect, DisplayItemRef, Epoch, ExtendMode, ExternalScrollId};
 use api::{FilterOp, FontInstanceKey, GlyphInstance, GlyphOptions, GlyphRasterSpace, GradientStop};
 use api::{IframeDisplayItem, ImageKey, ImageRendering, ItemRange, LayoutPoint};
@@ -28,14 +28,14 @@ use picture::PictureCompositeMode;
 use prim_store::{BrushClipMaskKind, BrushKind, BrushPrimitive, BrushSegmentDescriptor, CachedGradient};
 use prim_store::{CachedGradientIndex, EdgeAaSegmentMask, ImageCacheKey, ImagePrimitiveCpu, ImageSource};
 use prim_store::{BrushSegment, PictureIndex, PrimitiveContainer, PrimitiveIndex, PrimitiveStore};
-use prim_store::{OpacityBinding, ScrollNodeAndClipChain, TextRunPrimitiveCpu};
+use prim_store::{BorderSegment, BorderSource, OpacityBinding, ScrollNodeAndClipChain, TextRunPrimitiveCpu};
 use render_backend::{DocumentView};
 use resource_cache::{FontInstanceMap, ImageRequest, TiledImageMap};
 use scene::{Scene, ScenePipeline, StackingContextHelpers};
 use scene_builder::{BuiltScene, SceneRequest};
 use std::{f32, mem, usize};
 use tiling::{CompositeOps, ScrollbarPrimitive};
-use util::{MaxRect, RectHelpers, recycle_vec};
+use util::{MaxRect, RectHelpers, recycle_vec, extract_inner_rect_safe};
 
 static DEFAULT_SCROLLBAR_COLOR: ColorF = ColorF {
     r: 0.3,
@@ -1636,6 +1636,45 @@ impl<'a> DisplayListFlattener<'a> {
             ]
         };
 
+        fn add_segment(
+            segments: &mut Vec<BrushSegment>,
+            rect: LayoutRect,
+            uv_rect: TexelRect,
+            repeat_horizontal: RepeatMode,
+            repeat_vertical: RepeatMode
+        ) {
+            if uv_rect.uv1.x > uv_rect.uv0.x &&
+               uv_rect.uv1.y > uv_rect.uv0.y {
+
+                // Use segment relative interpolation for all
+                // instances in this primitive.
+                let mut brush_flags = BrushFlags::SEGMENT_RELATIVE;
+
+                // Enable repeat modes on the segment.
+                if repeat_horizontal == RepeatMode::Repeat {
+                    brush_flags |= BrushFlags::SEGMENT_REPEAT_X;
+                }
+                if repeat_vertical == RepeatMode::Repeat {
+                    brush_flags |= BrushFlags::SEGMENT_REPEAT_Y;
+                }
+
+                let segment = BrushSegment::new(
+                    rect,
+                    true,
+                    EdgeAaSegmentMask::empty(),
+                    [
+                        uv_rect.uv0.x,
+                        uv_rect.uv0.y,
+                        uv_rect.uv1.x,
+                        uv_rect.uv1.y,
+                    ],
+                    brush_flags,
+                );
+
+                segments.push(segment);
+            }
+        }
+
         match border_item.details {
             BorderDetails::NinePatch(ref border) => {
                 // Calculate the modified rect as specific by border-image-outset
@@ -1674,46 +1713,6 @@ impl<'a> DisplayListFlattener<'a> {
                     rect.origin.y + rect.size.height,
                 );
                 let br_inner = br_outer - vec2(border_item.widths.right, border_item.widths.bottom);
-
-                fn add_segment(
-                    segments: &mut Vec<BrushSegment>,
-                    rect: LayoutRect,
-                    uv_rect: TexelRect,
-                    repeat_horizontal: RepeatMode,
-                    repeat_vertical: RepeatMode
-                ) {
-                    if uv_rect.uv1.x > uv_rect.uv0.x &&
-                       uv_rect.uv1.y > uv_rect.uv0.y {
-
-                        // Use segment relative interpolation for all
-                        // instances in this primitive.
-                        let mut brush_flags = BrushFlags::SEGMENT_RELATIVE;
-
-                        // Enable repeat modes on the segment.
-                        if repeat_horizontal == RepeatMode::Repeat {
-                            brush_flags |= BrushFlags::SEGMENT_REPEAT_X;
-                        }
-                        if repeat_vertical == RepeatMode::Repeat {
-                            brush_flags |= BrushFlags::SEGMENT_REPEAT_Y;
-                        }
-
-                        let segment = BrushSegment::new(
-                            rect.origin,
-                            rect.size,
-                            true,
-                            EdgeAaSegmentMask::empty(),
-                            [
-                                uv_rect.uv0.x,
-                                uv_rect.uv0.y,
-                                uv_rect.uv1.x,
-                                uv_rect.uv1.y,
-                            ],
-                            brush_flags,
-                        );
-
-                        segments.push(segment);
-                    }
-                }
 
                 // Build the list of image segments
                 let mut segments = vec![];
@@ -1806,11 +1805,13 @@ impl<'a> DisplayListFlattener<'a> {
                     NinePatchBorderSource::Image(image_key) => {
                         BrushPrimitive::new(
                             BrushKind::Border {
-                                request: ImageRequest {
-                                    key: image_key,
-                                    rendering: ImageRendering::Auto,
-                                    tile: None,
-                                },
+                                source: BorderSource::Image(
+                                    ImageRequest {
+                                        key: image_key,
+                                        rendering: ImageRendering::Auto,
+                                        tile: None,
+                                    },
+                                ),
                             },
                             Some(descriptor),
                         )
@@ -1820,7 +1821,117 @@ impl<'a> DisplayListFlattener<'a> {
                 self.add_primitive(clip_and_scroll, info, Vec::new(), prim);
             }
             BorderDetails::Normal(ref border) => {
-                self.add_normal_border(info, border, &border_item.widths, clip_and_scroll);
+                let height_tl = border.radius.top_left.height;
+                let height_top = border_item.widths.top;
+                let height_tr = border.radius.top_right.height;
+
+                let height_bl = border.radius.bottom_left.height;
+                let height_bottom = border_item.widths.bottom;
+                let height_br = border.radius.bottom_right.height;
+
+                let width_tl = border.radius.top_left.width;
+                let width_left = border_item.widths.left;
+                let width_bl = border.radius.bottom_left.width;
+
+                let width_tr = border.radius.top_right.width;
+                let width_right = border_item.widths.right;
+                let width_br = border.radius.bottom_right.width;
+
+                let x0 = rect.origin.x;
+                let y0 = rect.origin.y;
+                let x3 = x0 + rect.size.width;
+                let y3 = y0 + rect.size.height;
+
+                let x1 = x0 + width_tl.max(width_bl.max(width_left));
+                let y1 = y0 + height_tl.max(height_tr.max(height_top));
+                let x2 = x3 - width_tr.max(width_br.max(width_right));
+                let y2 = y3 - height_bl.max(height_br.max(height_bottom));
+
+                // Build the list of image segments
+                let mut segments = vec![
+                    BrushSegment::new(
+                        LayoutRect::from_floats(x0, y0, x1, y1),
+                        true,
+                        EdgeAaSegmentMask::empty(),
+                        [0.0; 4],
+                        BrushFlags::SEGMENT_RELATIVE,
+                    ),
+                    BrushSegment::new(
+                        LayoutRect::from_floats(x2, y0, x3, y1),
+                        true,
+                        EdgeAaSegmentMask::empty(),
+                        [0.0; 4],
+                        BrushFlags::SEGMENT_RELATIVE,
+                    ),
+                    BrushSegment::new(
+                        LayoutRect::from_floats(x2, y2, x3, y3),
+                        true,
+                        EdgeAaSegmentMask::empty(),
+                        [0.0; 4],
+                        BrushFlags::SEGMENT_RELATIVE,
+                    ),
+                    BrushSegment::new(
+                        LayoutRect::from_floats(x0, y2, x1, y3),
+                        true,
+                        EdgeAaSegmentMask::empty(),
+                        [0.0; 4],
+                        BrushFlags::SEGMENT_RELATIVE,
+                    ),
+                    BrushSegment::new(
+                        LayoutRect::from_floats(x0, y1, x0 + width_left, y2),
+                        true,
+                        EdgeAaSegmentMask::empty(),
+                        [0.0; 4],
+                        BrushFlags::SEGMENT_RELATIVE,
+                    ),
+                    BrushSegment::new(
+                        LayoutRect::from_floats(x1, y0, x2, y0 + height_top),
+                        true,
+                        EdgeAaSegmentMask::empty(),
+                        [0.0; 4],
+                        BrushFlags::SEGMENT_RELATIVE,
+                    ),
+                    BrushSegment::new(
+                        LayoutRect::from_floats(x3 - width_right, y1, x3, y2),
+                        true,
+                        EdgeAaSegmentMask::empty(),
+                        [0.0; 4],
+                        BrushFlags::SEGMENT_RELATIVE,
+                    ),
+                    BrushSegment::new(
+                        LayoutRect::from_floats(x1, y3 - height_bottom, x2, y3),
+                        true,
+                        EdgeAaSegmentMask::empty(),
+                        [0.0; 4],
+                        BrushFlags::SEGMENT_RELATIVE,
+                    ),
+                ];
+
+                let descriptor = BrushSegmentDescriptor {
+                    segments,
+                    clip_mask_kind: BrushClipMaskKind::Unknown,
+                };
+
+                let prim = BrushPrimitive::new(
+                    BrushKind::Border {
+                        source: BorderSource::Border {
+                            handle: None,
+                        },
+                    },
+                    Some(descriptor),
+                );
+
+                let prim = PrimitiveContainer::Brush(prim);
+
+                self.add_primitive(
+                    clip_and_scroll,
+                    info,
+                    Vec::new(),
+                    prim,
+                );
+
+
+                // self.add_normal_border(info, border, &border_item.widths, clip_and_scroll);
             }
             BorderDetails::Gradient(ref border) => for segment in create_segments(border.outset) {
                 let segment_rel = segment.origin - rect.origin;

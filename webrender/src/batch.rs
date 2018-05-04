@@ -21,7 +21,7 @@ use picture::{PictureCompositeMode, PicturePrimitive, PictureSurface};
 use plane_split::{BspSplitter, Polygon, Splitter};
 use prim_store::{BrushKind, BrushPrimitive, BrushSegmentTaskId, CachedGradient, DeferredResolve};
 use prim_store::{EdgeAaSegmentMask, ImageSource, PictureIndex, PrimitiveIndex, PrimitiveKind};
-use prim_store::{PrimitiveMetadata, PrimitiveRun, PrimitiveStore};
+use prim_store::{BorderSource, PrimitiveMetadata, PrimitiveRun, PrimitiveStore};
 use render_task::{RenderTaskAddress, RenderTaskId, RenderTaskKind, RenderTaskTree};
 use renderer::{BlendMode, ImageBufferKind};
 use renderer::{BLOCKS_PER_UV_RECT, ShaderColorMode};
@@ -41,8 +41,6 @@ const OPAQUE_TASK_ADDRESS: RenderTaskAddress = RenderTaskAddress(0x7fff);
 pub enum TransformBatchKind {
     TextRun(GlyphFormat),
     Image(ImageBufferKind),
-    BorderCorner,
-    BorderEdge,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -1004,6 +1002,8 @@ impl AlphaBatchBuilder {
                 }
             }
             PrimitiveKind::Border => {
+                panic!("todo");
+                /*
                 let border_cpu =
                     &ctx.prim_store.cpu_borders[prim_metadata.cpu_prim_index.0];
                 // TODO(gw): Select correct blend mode for edges and corners!!
@@ -1063,6 +1063,7 @@ impl AlphaBatchBuilder {
                         }
                     }
                 }
+                */
             }
             PrimitiveKind::Image => {
                 let image_cpu = &ctx.prim_store.cpu_images[prim_metadata.cpu_prim_index.0];
@@ -1366,13 +1367,25 @@ impl BrushPrimitive {
                     ))
                 }
             }
-            BrushKind::Border { request, .. } => {
-                let cache_item = resolve_image(
-                    request,
-                    resource_cache,
-                    gpu_cache,
-                    deferred_resolves,
-                );
+            BrushKind::Border { ref source, .. } => {
+                let cache_item = match *source {
+                    BorderSource::Image(request) => {
+                        resolve_image(
+                            request,
+                            resource_cache,
+                            gpu_cache,
+                            deferred_resolves,
+                        )
+                    }
+                    BorderSource::Border { ref handle, .. } => {
+                        let rt_handle = handle
+                            .as_ref()
+                            .expect("bug: render task handle not allocated");
+                        let rt_cache_entry = resource_cache
+                            .get_cached_render_task(rt_handle);
+                        resource_cache.get_texture_cache_item(&rt_cache_entry.handle)
+                    }
+                };
 
                 if cache_item.texture_id == SourceTexture::Invalid {
                     None

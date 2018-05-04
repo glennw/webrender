@@ -11,7 +11,7 @@ use gpu_types::BrushFlags;
 use gpu_cache::GpuDataRequest;
 use prim_store::{BorderPrimitiveCpu, BrushClipMaskKind, BrushSegment, BrushSegmentDescriptor};
 use prim_store::{EdgeAaSegmentMask, PrimitiveContainer, ScrollNodeAndClipChain};
-use util::{lerp, pack_as_float};
+use util::{lerp, pack_as_float, RectHelpers};
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -505,8 +505,7 @@ impl<'a> DisplayListFlattener<'a> {
             let p3 = info.rect.bottom_right();
 
             let segment = |x0, y0, x1, y1| BrushSegment::new(
-                LayoutPoint::new(x0, y0),
-                LayoutSize::new(x1-x0, y1-y0),
+                LayoutRect::from_floats(x0, y0, x1, y1),
                 true,
                 EdgeAaSegmentMask::all(), // Note: this doesn't seem right, needs revision
                 [0.0; 4],
